@@ -43,7 +43,8 @@ async function until(fn,message){
   const port=portProbe.address().port;
   await new Promise(resolve=>portProbe.close(resolve));
   const base="http://127.0.0.1:"+port;
-  const authDir=path.join(root,"auths"),pluginDir=path.join(root,"plugins",process.platform,process.arch==="x64"?"amd64":process.arch);
+  const goos=process.platform==="win32"?"windows":process.platform;
+  const authDir=path.join(root,"auths"),pluginDir=path.join(root,"plugins",goos,process.arch==="x64"?"amd64":process.arch);
   fs.mkdirSync(authDir,{recursive:true});fs.mkdirSync(pluginDir,{recursive:true});fs.mkdirSync(path.join(root,"home"));
   fs.copyFileSync(library,path.join(pluginDir,id+path.extname(library)));
   const config=path.join(root,"config.yaml");
@@ -156,12 +157,32 @@ async function until(fn,message){
     await stopHost();startHost();
     await until(async()=>{const r=await api(plugin+"/quota-usage","POST",{});return r.data.cards?.length===count;},"restart lost/resurrected auth");
     assert.equal(authFiles().length,count);
-    console.log("PASS: real native CPA OAuth + plugin: protected completion, stage-only, concurrent host polls, verified file/source/identity, cross-entry duplicate, disabled preservation, cancellation, GOAT/Pro/Max admission, Go/invalid rejection, immediate model call, browser guide="+(process.env.CPA_BROWSER==="1")+", restart. Artifacts: "+root);
+    const nativeEnabled = process.env.CPA_REENABLE_TEST_PLUGIN === "1";
+    if (nativeEnabled) {
+      // 测试管理面板使用的关闭及重新启用路径，仅修改隔离宿主。
+      const patch = await api(mgmt+"/plugins/"+id+"/enabled","PATCH",{enabled:false});
+      assert.equal(patch.status,200,JSON.stringify(patch));
+      assert.equal(patch.data.status,"ok");
+      await until(async()=>{
+        const r=await fetch(base+"/v1/models",{headers:{Authorization:"Bearer test-client-key"}});
+        return r.status===200 && !(await r.json()).data?.some(m=>m.id==="commandcode/native-model");
+      },"disabled plugin stayed active");
+      const patchAgain = await api(mgmt+"/plugins/"+id+"/enabled","PATCH",{enabled:true});
+      assert.equal(patchAgain.status,200,JSON.stringify(patchAgain));
+      assert.equal(patchAgain.data.status,"ok");
+      await until(async()=>{
+        const r=await fetch(base+"/v1/models",{headers:{Authorization:"Bearer test-client-key"}});
+        return r.status===200 && (await r.json()).data?.some(m=>m.id==="commandcode/native-model");
+      },"plugin failed to re-register after re-enable");
+    }
+    console.log("PASS: real native CPA OAuth + plugin: protected completion, stage-only, concurrent host polls, verified file/source/identity, cross-entry duplicate, disabled preservation, cancellation, GOAT/Pro/Max admission, Go/invalid rejection, immediate model call, browser guide="+(process.env.CPA_BROWSER==="1")+", restart, re-enable="+nativeEnabled+". Artifacts: "+root);
   }catch(error){
     console.error("Isolated test artifacts: "+root+"; host log bytes="+log.length);
     throw error;
   }finally{
     if(browser)await browser.close();
-    await stopHost();await new Promise(resolve=>upstream.close(resolve));
+    await stopHost();
+    fs.writeFileSync(path.join(root,"host.log"),log);
+    await new Promise(resolve=>upstream.close(resolve));
   }
 })().catch(error=>{console.error(error.stack);process.exitCode=1});
