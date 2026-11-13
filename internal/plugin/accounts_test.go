@@ -304,3 +304,50 @@ func TestCatalogDiscoverySkipsDisabledAuthFiles(t *testing.T) {
 		t.Fatal("catalog did not use enabled auth file")
 	}
 }
+
+func TestAccountProxySummaryListAndRefreshReuseAuthGet(t *testing.T) {
+	files := []pluginapi.HostAuthFileEntry{{AuthIndex: "a", Name: "a.json", Provider: ProviderID, Source: "file"}}
+	failRead := false
+	f := &fakeCaller{responder: func(method string, _ []byte) ([]byte, error) {
+		switch method {
+		case pluginabi.MethodHostAuthList:
+			return hostOK(hostAuthListResponse{Files: files}), nil
+		case pluginabi.MethodHostAuthGet:
+			if failRead {
+				return []byte(`{"ok":false,"error":{"message":"read failed"}}`), nil
+			}
+			return hostOK(pluginapi.HostAuthGetResponse{JSON: []byte(`{"type":"commandcode","api_key":"api-secret","credential_source":"api_key","commandcode_proxy_id":"px_a","proxy_url":"socks5h://user:proxy-secret@Proxy.Example:1080"}`)}), nil
+		case pluginabi.MethodHostHTTPDo:
+			return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusServiceUnavailable}), nil
+		}
+		return hostOK(map[string]any{}), nil
+	}}
+	m := NewManager(NewHostBridge(f.call))
+	var list quotaList
+	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{}`)})
+	if err != nil || json.Unmarshal(resp.Body, &list) != nil || len(list.Cards) != 1 {
+		t.Fatalf("list=%s err=%v", resp.Body, err)
+	}
+	card := list.Cards[0]
+	if card.ProxyID != "px_a" || !card.ProxyConfigured || card.ProxyReadError || card.CredentialSource != "api_key" || card.ProxyURLHash != proxyURLHash("socks5h://user:proxy-secret@proxy.example:1080") {
+		t.Fatalf("summary=%#v", card)
+	}
+	if strings.Contains(string(resp.Body), "proxy-secret") || strings.Contains(string(resp.Body), "api-secret") {
+		t.Fatal("list leaked secrets")
+	}
+	if len(f.callsOf(pluginabi.MethodHostAuthGet)) != 1 {
+		t.Fatal("list repeated AuthGet")
+	}
+	resp, err = m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{"key_id":"a"}`)})
+	if err != nil || json.Unmarshal(resp.Body, &card) != nil || card.ProxyURLHash != list.Cards[0].ProxyURLHash {
+		t.Fatalf("refresh lost summary=%s err=%v", resp.Body, err)
+	}
+	if len(f.callsOf(pluginabi.MethodHostAuthGet)) != 2 {
+		t.Fatal("single refresh repeated AuthGet")
+	}
+	failRead = true
+	resp, _ = m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{}`)})
+	if json.Unmarshal(resp.Body, &list) != nil || !list.Cards[0].ProxyReadError {
+		t.Fatalf("unreadable proxy not flagged: %s", resp.Body)
+	}
+}

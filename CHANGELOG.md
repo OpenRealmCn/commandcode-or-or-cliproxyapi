@@ -2,6 +2,24 @@
 
 本文件记录面向使用者的更新摘要。详细版本历史见 [RELEASE_NOTES.md](RELEASE_NOTES.md)，操作步骤见 [中文说明](README.zh-CN.md) / [English README](README.md)。
 
+## v0.2.4 — 2026-11-13
+
+- 新增**代理池管理**：支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H 代理；可按行导入、预览去重与错误、使用稳定 ID 管理代理。
+- 新增**账号代理绑定**：账号可手动选择代理，或对未绑定账号预览后一键随机分配；支持批量绑定和解绑。绑定与原生 `proxy_url` 同次窄字段保存，避免覆盖认证文件其他设置。
+- 支持 ETag 并发保护、逐账号保存结果、未成功项按原分配重试；被账号引用的代理不可删除或修改地址。
+- 代理账号卡展示脱敏地址、目录匹配状态和异常状态；Web 页面提供出口能力说明、明文凭据存储提示和全局代理冲突提示。
+- **出口限制**：CPA 可能以全局代理覆盖账号代理，且存在宿主回退。额度查询、新账号核验和后台目录刷新仍走宿主默认出口。保存绑定不代表出口已验证，不保证严格代理隔离或 fail-closed。
+- 修复 Windows 原生测试插件目录命名为 CPA 要求的 `windows/<arch>`，补充真实宿主插件重新启用和代理池回归测试。
+
+### v0.2.4 English highlights — 2026-11-13
+
+- Add a proxy pool for HTTP, HTTPS, SOCKS5 and SOCKS5H with line-based import, validation/duplicate preview and stable IDs.
+- Add per-account proxy bindings, manual selection, batch binding/unbinding and previewed random allocation for unbound accounts. Bindings update the native `proxy_url` with a narrow auth-field PATCH.
+- Add ETag protection for pool writes, per-account results and retries that preserve the original allocation. Referenced proxies cannot be deleted or have their URL edited.
+- Show redacted proxy state, directory mismatches and global-proxy warnings in the account page.
+- **Egress limitation:** CPA's global proxy may override account proxies, and the host may fall back. Quota, new-account verification and background catalog requests continue to use the host default transport. Saving a binding does not verify egress and does not guarantee strict isolation or fail-closed behavior.
+- Fix the Windows native integration test plugin path and add proxy-pool/reenable coverage.
+
 ## v0.2.3 — 2026-11-13
 
 - **修复 Monthly/Weekly 额度耗尽时凭证未被禁用的问题**：月度或每周用量用完时，若 5-hour 窗口仍有余量，CPA 以前不会冷却该凭证并认为其仍有配额。根本原因：宿主 CPA 只有收到 HTTP 429 才会将整个凭证标为额度耗尽，而插件此前对 402/403 状态的额度错误不做改写。现在所有凭证级错误（`USAGE_EXCEEDED`、spend cap、`RATE_LIMITED`、5-hour/weekly/monthly 措辞）一律以 429 上报；`Retry-After` 上限从 24 小时提高到 32 天；reset 时间戳支持秒、毫秒、数字字符串、ISO 格式；消息正文中 "resets at…" / "Resets in Xd Yh Zm" 也会解析。

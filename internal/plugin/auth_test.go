@@ -112,3 +112,29 @@ func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 func bytesContain(haystack, needle []byte) bool {
 	return strings.Contains(string(haystack), string(needle))
 }
+
+func TestAuthProxyAndCustomIDPreserved(t *testing.T) {
+	raw := []byte(`{"type":"commandcode","id":"custom-runtime-id","api_key":"api-secret","proxy_url":"socks5h://user:p%40ss@proxy.example:1080","commandcode_proxy_id":"px_a","note":"keep"}`)
+	p := authProvider{}
+	parsed, err := p.ParseAuth(context.Background(), pluginapi.AuthParseRequest{Provider: ProviderID, FileName: "custom.json", RawJSON: raw})
+	if err != nil || !parsed.Handled || parsed.Auth.ProxyURL != "socks5h://user:p%40ss@proxy.example:1080" || parsed.Auth.ID != "custom-runtime-id" || parsed.Auth.Metadata["commandcode_proxy_id"] != "px_a" || string(parsed.Auth.StorageJSON) != string(raw) {
+		t.Fatalf("parse failed to preserve proxy or identity: %v", err)
+	}
+	for _, metadata := range []map[string]any{nil, parsed.Auth.Metadata} {
+		refreshed, err := p.RefreshAuth(context.Background(), pluginapi.AuthRefreshRequest{AuthID: parsed.Auth.ID, AuthProvider: ProviderID, StorageJSON: raw, Metadata: metadata, Attributes: parsed.Auth.Attributes})
+		if err != nil || refreshed.Auth.ProxyURL != parsed.Auth.ProxyURL || refreshed.Auth.ID != parsed.Auth.ID || string(refreshed.Auth.StorageJSON) != string(raw) {
+			t.Fatalf("refresh lost proxy or identity: %v", err)
+		}
+		if metadata != nil && refreshed.Auth.Metadata["commandcode_proxy_id"] != "px_a" {
+			t.Fatal("refresh lost custom pool ID")
+		}
+	}
+	refreshed, err := p.RefreshAuth(context.Background(), pluginapi.AuthRefreshRequest{StorageJSON: raw, Metadata: map[string]any{"proxy_url": ""}})
+	if err != nil || refreshed.Auth.ProxyURL != "" {
+		t.Fatal("metadata clearing ignored")
+	}
+	invalid, err := p.ParseAuth(context.Background(), pluginapi.AuthParseRequest{Provider: ProviderID, RawJSON: []byte(`{"type":"commandcode","api_key":"k","proxy_url":17}`)})
+	if err == nil || invalid.Handled || strings.Contains(err.Error(), "p%40ss") {
+		t.Fatal("malformed proxy error is unsafe")
+	}
+}

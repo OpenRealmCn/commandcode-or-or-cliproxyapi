@@ -203,6 +203,20 @@ Both surfaces read the same account API on the same authority as `base-url`:
 
 **Known email-sync limitation**: after discovering an email, the plugin attempts to update the original auth file so both pages can display it. It checks for prior deletion or changes, but the final check and file replacement are not atomic with host edits. Concurrent deletion, disabling, or metadata edits can be overwritten, and a deleted file can be recreated. Keeping email on both pages retains this risk. Wait for quota refreshes to finish before editing auth files, then reload the list to confirm the result.
 
+### Account proxy pool
+
+Open **CommandCode accounts and quota → Proxy pool and account egress**. This feature requires the host's v8 configuration API with ETag support and its auth-file field PATCH API; it has been integration-tested with CPA 8.0.69. Older hosts can keep using account and quota features, but proxy-pool management is disabled when the required APIs are unavailable.
+
+- Paste proxies or upload a UTF-8 text file, one URI per line. Supported schemes are `http`, `https`, `socks5` and `socks5h`, with an explicit port. Examples: `http://proxy.example:8080`, `socks5h://user:password@proxy.example:1080`, `socks5://[2001:db8::1]:1080`. Percent-encode reserved characters in credentials. Bare `host:port` requires selecting its protocol first; ambiguous colon-separated credential formats are not guessed.
+- Preview validates syntax, marks duplicate/error lines, and masks credentials. **Import valid entries** saves valid rows only; it is not a connection or egress test. Each entry gets a stable random `px_…` ID. You can search, rename labels and delete unreferenced proxies. To change an address, create another entry, migrate accounts and then delete the old one.
+- Choose a proxy on an account card or select accounts for a batch operation. **Randomly assign unbound accounts** only fills accounts without a pool binding or an externally configured proxy. If accounts are selected, the random operation is limited to them. Proxies may be shared. Review the generated mapping before confirming; retries keep the same mapping rather than drawing again.
+- Bindings save `commandcode_proxy_id` and native `proxy_url` together in each auth file via a narrow PATCH. Unbinding removes the ID and writes `proxy_url: ""`, which inherits host defaults; this is **not forced direct access**. Existing proxies without a pool ID are shown as external settings and are not automatically replaced.
+- The directory lives under `plugins.configs.commandcode-or-or-cliproxyapi.proxy-pool` as `schema-version: 1` and `proxies: [{id, label, url}]`. ETag/If-Match protects directory saves from stale writes. Account files are the only binding record. Changes across several accounts are not one transaction: the page reports success, failure or unknown results and reads settings back before retry. The host's auth PATCH has no compare-and-swap for the same fields, so cross-page edits can still race.
+
+**Egress boundary:** model execution and streaming inherit CPA's selected-account transport through `host_callback_id`. Native-host tests confirmed distinct HTTP and SOCKS5 exits with no global proxy; a global proxy can override this transport. CPA also permits fallback for invalid proxy setup, so the plugin cannot promise fail-closed isolation. Quota queries, new-key verification and background model discovery continue using host defaults, not the selected account's proxy. Saving a binding does not verify connectivity, public IP, proxy health or SOCKS5/SOCKS5H DNS semantics.
+
+**Credential storage:** authenticated proxy URIs are stored in plaintext in CPA's configuration and auth files and are read by the authenticated management page. Lists mask userinfo, and the page does not persist proxy credentials in localStorage/sessionStorage. Protect those server files and your management access. Delete/reference checks cannot provide a transaction across the directory and all auth files; another administrator can create a dangling ID concurrently, which is shown as a mismatch rather than automatically removing the saved proxy URL.
+
 ### Reasoning effort
 
 No unified thinking/effort capability API has been confirmed for this plugin. The historical catalog contained only `id`, `object`, `created`, `owned_by`, `name`, and `context_length`; the public catalog checked on 2026-10-20 also includes `supported_endpoints`. That field declares API routes, not reasoning-effort levels. The bundled vendor effort tables and gateway acceptance of `low | medium | high | xhigh | max` were checked on 2026-09-17; they are historical evidence, not guarantees of current acceptance or effect.
@@ -242,7 +256,15 @@ CPA_PLUGIN_LIBRARY=/absolute/path/to/commandcode-or-or-cliproxyapi.dylib \
 node tests/oauth_host.cjs
 ```
 
-Set `CPA_BROWSER=1` and provide Playwright as above to drive the real guide too. Use `.so` on Linux or `.dylib` on macOS.
+Proxy-pool browser fixtures cover import preview, redaction, ETag conflicts, unbound-only random allocation, fixed retry targets, partial writes and mobile/dark layouts:
+
+```bash
+npx --yes -p playwright -c 'NODE_PATH=$(dirname $(dirname $(command -v playwright))) node tests/proxy_pool_page.cjs'
+```
+
+The native proxy-pool test creates two HTTP proxies and a restricted SOCKS5 mock. With the same `CPA_HOST_BINARY` and `CPA_PLUGIN_LIBRARY` environment variables, run `node tests/proxy_pool_host.cjs`. Set `CPA_BROWSER=1` to include real-page account binding. All upstream requests and proxy endpoints are local mocks.
+
+Set `CPA_BROWSER=1` and provide Playwright as above to drive the real guide too. Use `.so` on Linux, `.dylib` on macOS or `.dll` on Windows.
 
 Alternatively, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an existing Chrome executable and skip the browser download.
 

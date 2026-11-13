@@ -133,6 +133,16 @@ Upstream remains CommandCode's OpenAI-compatible Provider API (`provider/v1`), m
 
 `resources/quota_page.html` and `oauth_page.html` are embedded (`resources/embed.go`) and served from `HandleManagement`. They are plain HTML/JS that authenticate by reading the host's `cli-proxy-auth` localStorage entry, decoding both `enc::v1::` (`location.host` + user-agent) and `enc::v2::` (`location.host` only) XOR formats, matching Management Center's `src/utils/encryption.ts`. If the host changes that storage format again, both pages need updating. Browser tests in `tests/*.cjs` exercise these pages against local mocks.
 
+### Account proxy pool
+
+The quota page also manages a proxy directory, persisted by the browser through the host's v8 config subtree API (`plugins/configs/<pluginID>/proxy-pool`) using ETag/If-Match. The directory stores only `schema-version` and `proxies[{id,label,url}]`, not bindings. Account auth files hold `commandcode_proxy_id` plus native `proxy_url`, updated together through the host's narrow auth-fields PATCH. Clear `proxy_url` with `""`, not null, to clear the runtime field; empty means inherit, not forced direct. Do not replace this with AuthGet/whole-file AuthSave. Cross-account updates are not atomic and same-field concurrent edits have no host CAS.
+
+`proxy_pool.go` performs pure URI validation/normalization and redacted account summaries, never HTTP or proxy dialing. `POST .../proxy-pool/validate` returns normalized URLs only for valid rows and hashes for valid/duplicate rows. Account summaries expose a SHA-256 canonical-URL hash, ID and masked display, not the original native URL or auth JSON. The authenticated config API still returns full pool URLs to the page; credentials persist in plaintext server files, never in browser storage.
+
+Native CPA 8.0.69 tests (`tests/proxy_pool_host.cjs`) verified HTTP/SOCKS5 account transports for unary/stream execution via `host_callback_id`, global proxy override after runtime reload, restart persistence and narrow-field unbinding. This is not a strict proxy-isolation guarantee: native `host.http.do/do_stream` uses auth=nil, inherited context transport can lose to global proxy, and invalid setup can fall back. Quota fetch, new-key verification and background catalog discovery keep the host default egress. Do not claim an added proxy field or `http_client_id` magically makes those requests account-scoped.
+
+Browser regressions: `tests/proxy_pool_page.cjs` (local mock APIs); `tests/proxy_pool_host.cjs` (real isolated host, optional `CPA_BROWSER=1`). Local host/tooling under `tests/cli/` is ignored. Random allocations fill only unbound/non-external accounts and preserve fixed mappings across retry. Referenced proxies cannot be deleted or edited by URL; create and migrate instead.
+
 ### Quota surfaces
 
 Two surfaces read the same upstream account API through `fetchQuota` (`quota.go`):

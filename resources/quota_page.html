@@ -78,9 +78,37 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
 .quota-error { color: var(--error-color); }
 .quota-warning { color: var(--warning-color); }
 .quota-muted { color: var(--text-secondary); }
+.proxy-panel { border: 1px solid var(--border-color); border-radius: var(--radius-md); margin: 20px 0; padding: 16px; background: var(--bg-primary); }
+.proxy-panel summary { cursor: pointer; font-size: 18px; font-weight: 600; }
+.proxy-panel p, .proxy-bind p { overflow-wrap: anywhere; }
+.proxy-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+.proxy-tools label { display: flex; align-items: center; gap: 6px; }
+.proxy-tools input, .proxy-tools select, .proxy-bind select { min-width: 0; max-width: 100%; }
+.proxy-textarea { display: block; width: 100%; min-height: 100px; resize: vertical; font: 13px/1.6 monospace; }
+.proxy-items, .proxy-preview { padding: 0; list-style: none; }
+.proxy-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border-color); overflow-wrap: anywhere; }
+.proxy-item .proxy-info { flex: 1 1 220px; min-width: 0; }
+.proxy-item code { overflow-wrap: anywhere; }
+.proxy-preview { max-height: 280px; overflow-y: auto; }
+.proxy-preview li { padding: 8px 0; border-bottom: 1px solid var(--border-color); overflow-wrap: anywhere; }
+.proxy-bind { border-top: 1px solid var(--border-color); margin-top: 12px; padding-top: 12px; }
+.proxy-bind label { display: block; margin-bottom: 6px; }
+.proxy-bind select { width: 100%; padding: 8px; }
+.proxy-check { min-width: 20px; min-height: 20px; accent-color: var(--primary-color); }
+.proxy-tools button, .proxy-item button, .proxy-bind button { min-height: 36px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--warning-color); outline-offset: 3px; }
+.proxy-results { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow-y: auto; }
+@media (prefers-reduced-motion: reduce) { .quota-fill { transition: none; } }
 @media (max-width: 768px) {
   body { padding: 20px 16px; }
-  .quota-grid { grid-template-columns: 1fr; }
+  .proxy-bind select { width: 100%; min-width: 0; padding: 8px; }
+  .proxy-tools { align-items: stretch; }
+  .proxy-tools > * { max-width: 100%; }
+  .proxy-card-select { width: 24px; height: 24px; flex: 0 0 24px; }
+  .quota-grid { grid-template-columns: minmax(0, 1fr); }
+  .quota-card, .proxy-panel { min-width: 0; padding: 14px; }
+  .proxy-item .proxy-info { flex-basis: 100%; }
+  .quota-account, .quota-actions { min-width: 0; overflow-wrap: anywhere; }
 }
 </style>
 </head>
@@ -96,6 +124,38 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
   <div class="quota-toolbar"><button id="reload-accounts" class="quota-refresh" type="button">刷新账户列表</button></div>
   <p id="list-status" class="quota-status" role="status"></p>
   <p id="legacy-status" class="quota-status quota-warning" role="status"></p>
+  <details id="proxy-panel" class="proxy-panel">
+    <summary>代理池与账号出口</summary>
+    <p class="quota-muted">代理 ID 与账号原生 proxy_url 同时保存。模型调用继承 CPA 账号代理；额度查询、新账号验证和后台目录刷新仍使用宿主默认出口。全局代理可能覆盖账号代理，宿主也可能回退，保存成功不代表出口已验证。</p>
+    <p id="proxy-global" class="quota-warning" role="status">正在检查全局代理设置…</p>
+    <p class="quota-warning">带密码的代理地址会明文保存到 CPA 配置及认证文件，请保护这些文件。此页面不会把代理凭据写入浏览器存储。</p>
+    <div class="proxy-tools"><button id="proxy-reload" class="quota-refresh" type="button">刷新代理池</button><span id="proxy-count" class="quota-muted"></span></div>
+    <p id="proxy-status" role="status" class="quota-status"></p>
+    <label for="proxy-lines">批量导入，一行一个标准 URI（密码中的特殊字符需 percent encoding）</label>
+    <textarea id="proxy-lines" class="quota-input proxy-textarea" autocomplete="off" spellcheck="false" placeholder="http://host:8080&#10;socks5h://user:password@host:1080"></textarea>
+    <div class="proxy-tools">
+      <label for="proxy-protocol">裸 host:port 的协议</label><select id="proxy-protocol" class="quota-input"><option value="">必须带协议</option><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5H</option></select>
+      <label for="proxy-file">或选择文本文件</label><input id="proxy-file" type="file" accept=".txt,text/plain">
+      <button id="proxy-validate" class="quota-refresh" type="button">预览导入</button>
+      <button id="proxy-import" class="quota-refresh" type="button" disabled>导入有效项</button>
+    </div>
+    <p id="proxy-preview-status" role="status"></p><ul id="proxy-preview" class="proxy-preview"></ul>
+    <label for="proxy-search">查找代理 ID、标签或主机</label><input id="proxy-search" type="search" class="quota-input" autocomplete="off">
+    <ul id="proxy-items" class="proxy-items"></ul>
+  </details>
+  <section class="proxy-panel" aria-label="账号代理批量分配">
+    <div class="proxy-tools">
+      <label><input id="account-select-all" type="checkbox" class="proxy-check">选择全部账号</label>
+      <span id="account-selected" class="quota-muted">已选 0 个账号</span>
+      <select id="proxy-batch-id" class="quota-input" aria-label="批量选择代理"><option value="">解绑，继承宿主默认设置</option></select>
+      <button id="proxy-batch-preview" class="quota-refresh" type="button" disabled>预览批量设置</button>
+      <button id="proxy-random" class="quota-refresh" type="button" disabled>随机分配未绑定账号</button>
+    </div>
+    <p class="quota-muted">随机默认仅处理未绑定且无外部代理设置的账号。先预览、再确认；已绑定账号不会被随机覆盖，多个账号可以共用同一代理。</p>
+    <div id="proxy-plan" hidden><p id="proxy-plan-summary"></p><ul id="proxy-plan-list" class="proxy-preview"></ul><button id="proxy-plan-apply" class="quota-refresh" type="button">确认保存分配</button> <button id="proxy-plan-cancel" class="quota-refresh" type="button">取消预览</button></div>
+    <p id="proxy-bind-status" role="status"></p><div id="proxy-results" class="proxy-results" aria-live="polite"></div>
+    <button id="proxy-retry" class="quota-refresh" type="button" hidden>重试未成功项（沿用原分配）</button>
+  </section>
   <main id="app"><p class="quota-muted">正在加载账户…</p></main>
 </div>
 <script>
@@ -206,9 +266,9 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
     });
   }
   function auth() {
-    const raw = localStorage.getItem("cli-proxy-auth");
-    if (!raw) return "";
     try {
+      const raw = localStorage.getItem("cli-proxy-auth");
+      if (!raw) return "";
       let decoded = raw;
       if (raw.startsWith("enc::v1::") || raw.startsWith("enc::v2::")) {
         const legacy = raw.startsWith("enc::v1::");
@@ -223,15 +283,344 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
       return "";
     } catch (_) { return ""; }
   }
-  function request(url, body) {
-    const headers = {"Content-Type": "application/json"};
+  function request(url, body) { return managementRequest(url, "POST", body).then(result => result.data); }
+  async function managementRequest(url, method = "GET", body, extra = {}) {
     const key = auth();
-    if (key) headers.Authorization = "Bearer " + key;
-    return fetch(url, {method: "POST", headers, body: JSON.stringify(body)}).then(async response => {
+    if (!key) throw new Error("请在 CPA 管理中心登录并记住密码。");
+    let response;
+    try {
+      response = await fetch(url, {method, headers: {"Content-Type": "application/json", Authorization: "Bearer " + key, ...extra},
+        body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(40000), redirect: "error", cache: "no-store"});
+    } catch (_) { throw new Error("请求超时或网络失败，结果未知，请刷新并核对后重试。"); }
+    {
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "Request failed");
-      return data;
+      if (!response.ok) {
+        // 不显示宿主错误 body，配置和字段错误可能回显含密码的 URI。
+        const error = new Error(response.status === 412 ? "配置已被其他操作修改，请刷新并重新确认。" :
+          response.status === 401 || response.status === 403 ? "管理登录已失效或权限不足。" : "管理请求失败（HTTP " + response.status + "）。");
+        error.status = response.status;
+        if (url === accountsEndpoint || url === quotaEndpoint) error.message = typeof data.error === "string" ? data.error : error.message;
+        throw error;
+      }
+      return {data, etag: response.headers.get("ETag")};
+    }
+  }
+  // 代理目录只存在于本次页面内存；持久化交给宿主配置 API。
+  const $ = id => document.getElementById(id);
+  const poolEndpoint = prefix + "/v8/management/config/plugins/configs/commandcode-or-or-cliproxyapi/proxy-pool";
+  const parentConfigEndpoint = prefix + "/v8/management/config/plugins/configs/commandcode-or-or-cliproxyapi";
+  const validateEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/proxy-pool/validate";
+  const fieldsEndpoint = prefix + "/v0/management/auth-files/fields";
+  const selectedAccounts = new Set();
+  const proxyDrafts = new Map();
+  let proxies = [], poolETag = "", poolReady = false, poolBusy = false, poolGeneration = 0;
+  let importRows = [], importGeneration = 0, fileGeneration = 0, allocation = [], failedAllocation = [], bindingBusy = false;
+  let fieldsSupported = true;
+  function status(id, message, error = false) {
+    $(id).textContent = message;
+    $(id).className = error ? "quota-status quota-error" : "quota-status quota-muted";
+  }
+  function node(tag, value, cls) {
+    const el = document.createElement(tag);
+    if (value !== undefined) el.textContent = value;
+    if (cls) el.className = cls;
+    return el;
+  }
+  function proxyOptions(select, includeUnbind = true) {
+    select.textContent = "";
+    if (includeUnbind) select.appendChild(new Option("解绑，继承宿主默认设置", ""));
+    proxies.forEach(p => select.appendChild(new Option(p.label + " · " + p.id, p.id)));
+  }
+  function proxyKnown(card) {
+    return typeof card.proxy_read_error === "boolean" && !card.proxy_read_error &&
+      typeof card.proxy_configured === "boolean" && typeof card.proxy_id === "string" && typeof card.proxy_url_hash === "string";
+  }
+  function unbound(card) { return proxyKnown(card) && !card.proxy_id && !card.proxy_configured; }
+  function bindingDescription(card) {
+    if (!proxyKnown(card)) return "代理读取失败或当前插件不支持，请刷新后重试。";
+    if (!card.proxy_id) return card.proxy_configured ? "外部设置 · " + (card.proxy_display || "代理格式无效") : "未绑定，继承宿主默认设置";
+    const p = proxies.find(p => p.id === card.proxy_id);
+    if (!poolReady) return "代理 ID：" + card.proxy_id + "（目录尚未就绪）";
+    if (!p) return "代理 ID 不在目录中：" + card.proxy_id + "，原生代理设置仍保留。";
+    if (!card.proxy_url_hash || p.url_hash !== card.proxy_url_hash) return "代理 ID 与账号原生 URL 不一致，请重新绑定：" + card.proxy_id;
+    return p.label + " · " + p.id + " · " + p.display + "（设置已保存，出口未验证）";
+  }
+  function syncProxyControls() {
+    const busy = poolBusy || bindingBusy;
+    syncReloadButton();
+    saveButton.disabled = saving || busy;
+    apiKeyInput.disabled = saving || busy;
+    $("proxy-reload").disabled = busy;
+    $("proxy-validate").disabled = busy || !poolReady;
+    $("proxy-import").disabled = busy || !poolReady || !importRows.some(r => r.status === "valid");
+    $("proxy-batch-preview").disabled = busy || !poolReady || !fieldsSupported || !selectedAccounts.size;
+    $("proxy-random").disabled = busy || !poolReady || !fieldsSupported || !proxies.length || !cards.some(c => unbound(c) && (!selectedAccounts.size || selectedAccounts.has(c.file_name)));
+    $("proxy-batch-id").disabled = busy || !poolReady || !fieldsSupported;
+    $("proxy-plan-apply").disabled = busy || !allocation.length;
+    $("proxy-plan-cancel").disabled = busy;
+    $("proxy-retry").disabled = busy || !poolReady || !fieldsSupported;
+    $("account-select-all").disabled = busy || !cards.length;
+    $("account-selected").textContent = "已选 " + selectedAccounts.size + " 个账号";
+    $("account-select-all").checked = !!cards.length && cards.every(c => selectedAccounts.has(c.file_name));
+    $("account-select-all").indeterminate = selectedAccounts.size > 0 && !$("account-select-all").checked;
+  }
+  function invalidateImport() {
+    importGeneration++;
+    importRows = [];
+    $("proxy-preview").textContent = "";
+    $("proxy-preview-status").textContent = "";
+    syncProxyControls();
+  }
+  function cancelAllocation() { allocation = []; $("proxy-plan").hidden = true; syncProxyControls(); }
+  async function parseDirectory(data) {
+    if (!data || data["schema-version"] !== 1 || !Array.isArray(data.proxies) || data.proxies.length > 1000) throw new Error("代理池格式或版本不支持，未覆盖已有数据。");
+    const ids = new Set();
+    for (const p of data.proxies) {
+      if (!p || typeof p.id !== "string" || !/^px_[a-f0-9]{32}$/.test(p.id) || ids.has(p.id) ||
+          typeof p.label !== "string" || !p.label.trim() || p.label.length > 128 || /[\x00-\x1f\x7f]/.test(p.label) ||
+          typeof p.url !== "string" || /[\r\n]/.test(p.url)) throw new Error("代理池记录无效或 ID 重复，未覆盖已有数据。");
+      ids.add(p.id);
+    }
+    if (!data.proxies.length) return [];
+    const checked = await request(validateEndpoint, {lines: data.proxies.map(p => p.url).join("\n"), existing: []});
+    if (!Array.isArray(checked.rows) || checked.rows.length !== data.proxies.length || checked.rows.some(r => !["valid", "duplicate"].includes(r.status) || !r.url_hash)) throw new Error("无法校验已有代理池，已停止修改。");
+    return data.proxies.map((p, i) => ({id: p.id, label: p.label, url: checked.rows[i].url || p.url, url_hash: checked.rows[i].url_hash, display: checked.rows[i].display}));
+  }
+  function storedDirectory(list) { return {"schema-version": 1, proxies: list.map(({id, label, url}) => ({id, label, url}))}; }
+  async function readDirectory() {
+    let response;
+    try { response = await managementRequest(poolEndpoint); }
+    catch (err) {
+      if (err.status !== 404) throw err;
+      const parent = await managementRequest(parentConfigEndpoint);
+      if (!parent.data || typeof parent.data !== "object" || Array.isArray(parent.data) || Object.hasOwn(parent.data, "proxy-pool")) throw new Error("代理池接口返回不一致，请刷新后重试。");
+      if (!parent.etag) throw new Error("当前 CPA 未提供配置 ETag，不能安全保存代理池。");
+      return {proxies: [], etag: parent.etag};
+    }
+    if (!response.etag) throw new Error("当前 CPA 未提供配置 ETag，不能安全保存代理池。");
+    return {proxies: await parseDirectory(response.data), etag: response.etag};
+  }
+  function adoptDirectory(value) {
+    proxies = value.proxies; poolETag = value.etag; poolReady = true;
+    invalidateImport(); cancelAllocation(); renderPool(); render();
+  }
+  async function refreshPool() {
+    if (poolBusy || bindingBusy) return;
+    const generation = ++poolGeneration;
+    poolBusy = true; poolReady = false; syncProxyControls();
+    status("proxy-status", "正在读取代理池…");
+    try {
+      const next = await readDirectory();
+      if (generation !== poolGeneration) return;
+      adoptDirectory(next);
+      status("proxy-status", "目录已读取；绑定状态以账号原生字段为准。");
+    } catch (err) {
+      poolReady = false;
+      status("proxy-status", err.status === 404 || err.status === 405 ? "当前 CPA 不支持安全代理池管理，请使用支持 v8 配置 ETag 的宿主。" : err.message, true);
+    } finally { poolBusy = false; renderPool(); render(); syncProxyControls(); }
+  }
+  async function persistDirectory(next) {
+    const expected = JSON.stringify(storedDirectory(next));
+    let writeError;
+    try { await managementRequest(poolEndpoint, "PUT", storedDirectory(next), {"If-Match": poolETag}); }
+    catch (err) { writeError = err; }
+    // 只回读配置，不在网络结果未知时重发写入，避免重复导入或覆盖并发变更。
+    try {
+      const actual = await readDirectory();
+      adoptDirectory(actual);
+      if (JSON.stringify(storedDirectory(actual.proxies)) !== expected) throw writeError || new Error("回读结果与提交不一致，可能存在并发修改，请重新确认。");
+      if (writeError?.status === 412) throw writeError;
+      status("proxy-status", "代理池已保存并回读核对。");
+    } catch (err) {
+      if (!poolReady || !writeError || writeError.status !== 412) poolReady = false;
+      throw err;
+    }
+  }
+  function renderPool() {
+    $("proxy-count").textContent = poolReady ? proxies.length + " 个代理" : "目录未就绪";
+    const previous = $("proxy-batch-id").value;
+    proxyOptions($("proxy-batch-id"));
+    if (proxies.some(p => p.id === previous)) $("proxy-batch-id").value = previous;
+    const list = $("proxy-items"); list.textContent = "";
+    const query = $("proxy-search").value.trim().toLowerCase();
+    proxies.filter(p => (p.id + " " + p.label + " " + p.display).toLowerCase().includes(query)).forEach(p => {
+      const li = node("li", undefined, "proxy-item");
+      const info = node("div", undefined, "proxy-info");
+      info.append(node("strong", p.label), node("div", p.id), node("code", p.display));
+      const count = cards.filter(c => c.proxy_id === p.id || (p.url_hash && c.proxy_url_hash === p.url_hash)).length;
+      info.append(node("div", "引用账号：" + count, "quota-muted"));
+      const rename = node("button", "改标签", "quota-refresh"); rename.type = "button";
+      rename.disabled = !poolReady || poolBusy || bindingBusy;
+      rename.onclick = async () => {
+        const label = window.prompt("代理标签（不包含凭据）", p.label)?.trim();
+        if (!label || label === p.label) return;
+        if (label.length > 128 || /[\x00-\x1f\x7f]/.test(label)) { status("proxy-status", "标签最多 128 字符，不能包含控制字符。", true); return; }
+        await poolMutation(async () => {
+          const latest = await readDirectory();
+          adoptDirectory(latest);
+          const target = latest.proxies.find(item => item.id === p.id);
+          if (!target) throw new Error("代理已被其他操作删除，请刷新。");
+          await persistDirectory(latest.proxies.map(item => item.id === p.id ? {...item, label} : item));
+        });
+      };
+      const remove = node("button", "删除", "quota-refresh"); remove.type = "button";
+      remove.disabled = !poolReady || poolBusy || bindingBusy || !!count || !listReady || !!listError || cards.some(c => !proxyKnown(c));
+      remove.onclick = async () => {
+        await poolMutation(async () => {
+          await loadList();
+          if (listError || cards.some(c => !proxyKnown(c))) throw new Error("账号信息读取不完整，不能删除代理。");
+          if (cards.some(c => c.proxy_id === p.id || c.proxy_url_hash === p.url_hash)) throw new Error("仍有账号引用此代理，请先迁移或解绑。");
+          if (!window.confirm("删除代理 " + p.id + "？此操作只修改目录。")) return;
+          await persistDirectory(proxies.filter(item => item.id !== p.id));
+        });
+      };
+      li.append(info, rename, remove); list.appendChild(li);
     });
+    syncProxyControls();
+  }
+  async function poolMutation(fn) {
+    if (poolBusy || bindingBusy || !poolReady) return;
+    poolBusy = true; syncProxyControls(); render(); renderPool();
+    try { await fn(); } catch (err) { status("proxy-status", err.message || "操作结果未知，请刷新后核对。", true); }
+    finally { poolBusy = false; renderPool(); render(); syncProxyControls(); }
+  }
+  async function previewImport() {
+    if (!poolReady || poolBusy || bindingBusy) return;
+    invalidateImport();
+    const generation = importGeneration;
+    const lines = $("proxy-lines").value;
+    if (!lines.trim()) { status("proxy-preview-status", "请输入至少一个代理。", true); return; }
+    if (new TextEncoder().encode(lines).length > 512 * 1024 || lines.split("\n").length > 1000) { status("proxy-preview-status", "导入最多 1000 行、512 KiB。", true); return; }
+    poolBusy = true; syncProxyControls();
+    try {
+      const result = await request(validateEndpoint, {lines, default_protocol: $("proxy-protocol").value, existing: storedDirectory(proxies).proxies});
+      if (generation !== importGeneration) return;
+      importRows = Array.isArray(result.rows) ? result.rows : [];
+      $("proxy-preview").textContent = "";
+      importRows.forEach(row => {
+        const li = node("li");
+        li.className = row.status === "error" ? "quota-error" : "quota-muted";
+        li.textContent = "第 " + row.line + " 行 · " + (row.status === "valid" ? "有效 · " : row.status === "duplicate" ? "重复 · " : "错误 · ") + (row.display || row.error || "格式无效");
+        $("proxy-preview").appendChild(li);
+      });
+      status("proxy-preview-status", "有效 " + importRows.filter(r => r.status === "valid").length + "，重复 " + importRows.filter(r => r.status === "duplicate").length + "，错误 " + importRows.filter(r => r.status === "error").length + "。确认后仅导入有效项。");
+    } catch (err) { status("proxy-preview-status", err.message || "代理校验失败。", true); }
+    finally { poolBusy = false; syncProxyControls(); }
+  }
+  function randomID() {
+    const bytes = new Uint8Array(16); crypto.getRandomValues(bytes);
+    return "px_" + Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+  }
+  function randomIndex(length) {
+    const range = 0x100000000, limit = range - range % length;
+    let value; do { value = crypto.getRandomValues(new Uint32Array(1))[0]; } while (value >= limit);
+    return value % length;
+  }
+  async function importValid() {
+    await poolMutation(async () => {
+      const valid = importRows.filter(r => r.status === "valid");
+      if (!valid.length) return;
+      if (proxies.length + valid.length > 1000) throw new Error("代理池最多保存 1000 个代理。");
+      const ids = new Set(proxies.map(p => p.id));
+      const additions = valid.map(r => {
+        let id; do { id = randomID(); } while (ids.has(id)); ids.add(id);
+        return {id, label: "代理 " + id.slice(3, 11), url: r.url, url_hash: r.url_hash, display: r.display};
+      });
+      await persistDirectory([...proxies, ...additions]);
+      $("proxy-lines").value = ""; $("proxy-file").value = "";
+    });
+  }
+  function previewAllocation(items) {
+    if (poolBusy || bindingBusy || !poolReady || !fieldsSupported) return;
+    if (!items.length) { status("proxy-bind-status", "没有可分配的账号。随机只填充未绑定账号，外部设置不会自动覆盖。", true); return; }
+    allocation = items.map(item => ({...item}));
+    failedAllocation = []; $("proxy-retry").hidden = true;
+    $("proxy-plan").hidden = false;
+    $("proxy-plan-summary").textContent = "将更新 " + items.length + " 个账号。已有设置可能被覆盖；逐账号保存，不是跨账号事务。";
+    $("proxy-plan-list").textContent = "";
+    items.forEach(item => $("proxy-plan-list").appendChild(node("li", item.name + " → " + (item.proxyID || "解绑，继承默认设置"))));
+    syncProxyControls();
+  }
+  function makeAllocation(card, proxy) {
+    return {name: card.file_name, proxyID: proxy?.id || "", url: proxy?.url || "", hash: proxy?.url_hash || "",
+      previousID: card.proxy_id, previousHash: card.proxy_url_hash, previousConfigured: card.proxy_configured};
+  }
+  function allocationMatches(card, target) {
+    return card && proxyKnown(card) && card.proxy_id === target.proxyID &&
+      (target.proxyID ? card.proxy_configured && card.proxy_url_hash === target.hash : !card.proxy_configured);
+  }
+  function previewRandom() {
+    const eligible = cards.filter(c => unbound(c) && (!selectedAccounts.size || selectedAccounts.has(c.file_name)));
+    if (!proxies.length) { status("proxy-bind-status", "请先导入代理。", true); return; }
+    previewAllocation(eligible.map(c => makeAllocation(c, proxies[randomIndex(proxies.length)])));
+  }
+  function appendProxyBinding(section, card) {
+    const box = node("div", undefined, "proxy-bind");
+    const summary = node("p", bindingDescription(card), proxyKnown(card) ? "quota-muted" : "quota-warning");
+    const label = node("label", "账号代理");
+    const select = node("select", undefined, "quota-input"); proxyOptions(select);
+    const safeID = "proxy-card-" + String(cards.indexOf(card)); select.id = safeID; label.htmlFor = safeID;
+    select.value = proxyDrafts.get(card.file_name) ?? (proxies.some(p => p.id === card.proxy_id) ? card.proxy_id : "");
+    select.onchange = () => proxyDrafts.set(card.file_name, select.value);
+    select.disabled = !poolReady || poolBusy || bindingBusy || !proxyKnown(card) || !fieldsSupported;
+    const apply = node("button", "预览代理设置", "quota-refresh"); apply.type = "button"; apply.disabled = select.disabled;
+    apply.onclick = () => previewAllocation([makeAllocation(card, proxies.find(p => p.id === select.value))]);
+    box.append(summary, label, select, apply); section.appendChild(box);
+  }
+  async function applyAllocation(targets) {
+    if (bindingBusy || poolBusy || !poolReady || !targets.length || !fieldsSupported) return;
+    bindingBusy = true; cancelAllocation(); syncProxyControls(); render();
+    const results = [];
+    $("proxy-results").textContent = "";
+    status("proxy-bind-status", "正在核对最新目录及账号，再逐个保存…");
+    try {
+      // 固定预览映射：目录地址变动或删除时拒绝，不临时换一个随机代理。
+      const latest = await readDirectory();
+      // 目录可能含相同地址的多个旧 ID，按后端 hash 对齐规范化值。
+      if (targets.some(t => t.proxyID && !latest.proxies.some(p => p.id === t.proxyID && p.url_hash === t.hash))) throw new Error("目录已变更，请重新预览分配。");
+      proxies = latest.proxies; poolETag = latest.etag;
+      await loadList();
+      if (listError) throw new Error("无法核对最新账号列表，未继续保存。");
+      for (const target of targets) {
+        const card = cards.find(c => c.file_name === target.name);
+        if (!card || !proxyKnown(card)) { results.push({...target, outcome: "失败：账号已移除或读取失败"}); continue; }
+        if (allocationMatches(card, target)) { results.push({...target, outcome: "成功"}); continue; }
+        // 预览后账号可能已被别的页面绑定；即使是重试也不能覆盖新设置。
+        if (card.proxy_id !== target.previousID || card.proxy_url_hash !== target.previousHash || card.proxy_configured !== target.previousConfigured) {
+          results.push({...target, outcome: "失败：账号代理已变更，请重新预览"}); continue;
+        }
+        if (!fieldsSupported) { results.push({...target, outcome: "失败：宿主不支持账号字段更新"}); continue; }
+        let writeError;
+        try { await managementRequest(fieldsEndpoint, "PATCH", {name: target.name, commandcode_proxy_id: target.proxyID || null, proxy_url: target.url}); }
+        catch (err) {
+          writeError = err;
+          if (writeError.status === 404 || writeError.status === 405) fieldsSupported = false;
+        }
+        // PATCH 可能已落盘但响应丢失，始终回读，不在这里自动重发。
+        try {
+          await loadList();
+          const actual = cards.find(c => c.file_name === target.name);
+          const matches = !listError && allocationMatches(actual, target);
+          results.push({...target, outcome: matches ? "成功" : writeError?.status === 404 || writeError?.status === 405 ? "失败：宿主接口不支持或账号已移除" : "未知：回读未匹配，请核对后重试"});
+          if (matches) proxyDrafts.delete(target.name);
+        } catch (_) { results.push({...target, outcome: "未知：无法回读，重试前请刷新核对"}); }
+        $("proxy-results").textContent = results.map(r => r.name + " → " + (r.proxyID || "解绑") + "：" + r.outcome).join("\n");
+      }
+      $("proxy-results").textContent = results.map(r => r.name + " → " + (r.proxyID || "解绑") + "：" + r.outcome).join("\n");
+      failedAllocation = results.filter(r => r.outcome !== "成功");
+      $("proxy-retry").hidden = !failedAllocation.length;
+      status("proxy-bind-status", "已核对保存 " + (results.length - failedAllocation.length) + " 个；失败或未知 " + failedAllocation.length + " 个。保存不代表出口已验证。", !!failedAllocation.length);
+    } catch (err) {
+      failedAllocation = targets; $("proxy-retry").hidden = false;
+      status("proxy-bind-status", err.message || "批量设置失败，原分配保留以供重试。", true);
+    } finally { bindingBusy = false; renderPool(); render(); syncProxyControls(); }
+  }
+  async function checkGlobalProxy() {
+    try {
+      const {data} = await managementRequest(prefix + "/v0/management/proxy-url");
+      if (!data || typeof data["proxy-url"] !== "string") throw new Error("unsupported");
+      status("proxy-global", data["proxy-url"] ? "存在全局代理，可能覆盖账号出口。账号设置保存成功并不代表绑定代理实际生效。" : "未发现全局代理；账号代理仍由 CPA 继承，无法保证故障时不回退。");
+    } catch (_) { status("proxy-global", "无法检查全局代理，宿主可能覆盖账号出口。", true); }
   }
   function setSaveStatus(message, isError) {
     saveStatus.className = message ? (isError ? "quota-status quota-error" : "quota-status quota-success") : "quota-status";
@@ -246,7 +635,8 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
     legacyStatus.textContent = ignored ? "旧的 api-keys 已停用，不会导入。可以移除旧配置。" : "";
   }
   function syncReloadButton() {
-    reloadButton.disabled = listLoading;
+    // 账号写入/删除核对期间使用独占列表刷新，避免慢响应被另一次刷新取代。
+    reloadButton.disabled = listLoading || bindingBusy || poolBusy;
     reloadButton.textContent = listLoading ? "正在刷新列表…" : "刷新账户列表";
   }
   function text(parent, value) { const node = document.createElement("span"); node.textContent = value == null || value === "" ? "-" : value; parent.appendChild(node); }
@@ -275,6 +665,9 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
   }
   function render() {
     app.textContent = "";
+    selectedAccounts.forEach(name => { if (!cards.some(c => c.file_name === name)) selectedAccounts.delete(name); });
+    renderPool();
+    syncProxyControls();
     if (!cards.length) {
       if (listError) return;
       const p = document.createElement("p"); p.className = "quota-muted"; p.setAttribute("role", "status"); p.textContent = listReady ? "还没有 CommandCode 账户。" : "正在加载账户…"; app.appendChild(p); return;
@@ -283,6 +676,11 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
     cards.forEach(card => {
       const section = document.createElement("section"); section.className = "quota-card";
       const header = document.createElement("div"); header.className = "quota-card-header";
+      const choose = node("input", undefined, "proxy-check"); choose.type = "checkbox";
+      choose.setAttribute("aria-label", "选择账号 " + card.label); choose.checked = selectedAccounts.has(card.file_name);
+      choose.disabled = bindingBusy || poolBusy;
+      choose.onchange = () => { if (choose.checked) selectedAccounts.add(card.file_name); else selectedAccounts.delete(card.file_name); syncProxyControls(); };
+      header.appendChild(choose);
       const cached = values.get(card.key_id);
       const badge = document.createElement("span"); badge.className = "credential-badge"; badge.textContent = (cached && cached.plan) || "CC"; badge.setAttribute("aria-hidden", "true");
       const title = document.createElement("h2"); title.className = "credential-name"; title.textContent = labels.get(card.key_id) || card.label; header.append(badge, title); section.appendChild(header);
@@ -292,6 +690,7 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
       const source = document.createElement("span"); source.className = "quota-meta";
       source.textContent = card.credential_source === "browser_authorization" ? "来源：浏览器授权入口" : card.credential_source === "api_key" ? "来源：手动 API key" : "来源：已有认证";
       account.append(fileName, accountState, source); section.appendChild(account);
+      appendProxyBinding(section, card);
       [["five_hour", "5-hour window"], ["weekly", "Weekly window"]].forEach(entry => {
         const name = entry[0];
         const row = document.createElement("div"); row.className = "quota-row";
@@ -391,7 +790,45 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
   }
   saveForm.addEventListener("submit", onSave);
   reloadButton.addEventListener("click", () => { if (!listLoading) loadList(); });
+  $("proxy-reload").addEventListener("click", refreshPool);
+  $("proxy-search").addEventListener("input", renderPool);
+  $("proxy-lines").addEventListener("input", () => { fileGeneration++; invalidateImport(); });
+  $("proxy-protocol").addEventListener("change", invalidateImport);
+  $("proxy-file").addEventListener("change", async event => {
+    const latest = ++fileGeneration;
+    invalidateImport();
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    if (file.size > 512 * 1024) { status("proxy-preview-status", "文件最多 512 KiB。", true); event.target.value = ""; return; }
+    try {
+      const content = await file.text();
+      if (latest !== fileGeneration) return;
+      $("proxy-lines").value = content;
+      invalidateImport();
+      status("proxy-preview-status", "已载入 " + file.name + "，确认内容后点击预览导入。");
+    }
+    catch (_) { status("proxy-preview-status", "无法读取文本文件。", true); }
+  });
+  $("proxy-validate").addEventListener("click", previewImport);
+  $("proxy-import").addEventListener("click", importValid);
+  $("account-select-all").addEventListener("change", event => {
+    if (event.target.checked) cards.forEach(c => selectedAccounts.add(c.file_name)); else selectedAccounts.clear();
+    syncProxyControls(); render();
+  });
+  $("proxy-batch-preview").addEventListener("click", () => {
+    const id = $("proxy-batch-id").value;
+    const proxy = proxies.find(p => p.id === id);
+    const targets = cards.filter(c => selectedAccounts.has(c.file_name)).map(c => makeAllocation(c, proxy));
+    if (targets.some(c => !proxyKnown(cards.find(a => a.file_name === c.name)))) { status("proxy-bind-status", "有账号代理状态未知，刷新后再操作。", true); return; }
+    previewAllocation(targets);
+  });
+  $("proxy-random").addEventListener("click", previewRandom);
+  $("proxy-plan-apply").addEventListener("click", () => applyAllocation(allocation));
+  $("proxy-plan-cancel").addEventListener("click", cancelAllocation);
+  $("proxy-retry").addEventListener("click", () => applyAllocation(failedAllocation));
   loadList();
+  checkGlobalProxy();
+  refreshPool();
 })();
 </script>
 </body>

@@ -23,6 +23,7 @@ func (authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest)
 		ID       string `json:"id"`
 		Label    string `json:"label"`
 		APIKey   string `json:"api_key"`
+		ProxyURL string `json:"proxy_url"`
 		Email    string `json:"email"`
 		Disabled bool   `json:"disabled"`
 	}
@@ -47,6 +48,7 @@ func (authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest)
 	auth := pluginapi.AuthData{
 		Provider: ProviderID, ID: raw.ID, FileName: req.FileName, Label: raw.Label,
 		Disabled: raw.Disabled, StorageJSON: req.RawJSON, Metadata: metadata,
+		ProxyURL:   raw.ProxyURL,
 		Attributes: map[string]string{"api_key": strings.TrimSpace(raw.APIKey)},
 	}
 	return pluginapi.AuthParseResponse{Handled: true, Auth: auth}, nil
@@ -54,7 +56,15 @@ func (authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest)
 
 func (authProvider) RefreshAuth(_ context.Context, req pluginapi.AuthRefreshRequest) (pluginapi.AuthRefreshResponse, error) {
 	debugTrace("auth refresh request provider=%s id=%s storage_json_bytes=%d attr_names=%v metadata_names=%v", req.AuthProvider, req.AuthID, len(req.StorageJSON), mapKeys(req.Attributes), mapKeys(req.Metadata))
-	return pluginapi.AuthRefreshResponse{Auth: pluginapi.AuthData{Provider: req.AuthProvider, ID: req.AuthID, StorageJSON: req.StorageJSON, Metadata: req.Metadata, Attributes: req.Attributes}}, nil
+	// Prefer host metadata so a recently patched auth proxy is not replaced by a stale snapshot.
+	proxyURL, present := req.Metadata["proxy_url"]
+	if !present {
+		var stored map[string]any
+		_ = json.Unmarshal(req.StorageJSON, &stored)
+		proxyURL = stored["proxy_url"]
+	}
+	proxy, _ := proxyURL.(string)
+	return pluginapi.AuthRefreshResponse{Auth: pluginapi.AuthData{Provider: req.AuthProvider, ID: req.AuthID, ProxyURL: proxy, StorageJSON: req.StorageJSON, Metadata: req.Metadata, Attributes: req.Attributes}}, nil
 }
 
 func mapKeys[T any](values map[string]T) []string {

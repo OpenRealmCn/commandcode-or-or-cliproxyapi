@@ -203,6 +203,20 @@ API key 不写在这份 YAML 里。CLIProxyAPI 认证文件是唯一来源。
 
 **邮箱同步的已知限制**：查到邮箱后，插件会尽量写回原认证文件，让插件页和宿主认证文件页都能显示邮箱。写回前会检查文件是否已删除或更改，但最后一次检查与替换文件之间仍存在竞争窗口；同时删除、禁用或修改备注，可能被旧内容覆盖，删除的文件也可能被重新创建。当前选择保留两处显示邮箱的行为，未消除这一风险。建议等额度刷新结束后再修改认证文件，操作后刷新列表确认结果。
 
+### 账号代理池
+
+在 **CommandCode 账户与额度 → 代理池与账号出口** 管理代理。本功能需要宿主的 v8 配置 ETag 接口和认证字段 PATCH 接口，已用 CPA 8.0.69 做原生集成测试；缺少相应 API 时禁用代理池管理，不影响原账户与额度功能。
+
+- 支持粘贴或导入 UTF-8 文本，一行一个 `http`、`https`、`socks5` 或 `socks5h` URI，必须有主机和端口。示例：`http://proxy.example:8080`、`socks5h://user:password@proxy.example:1080`、`socks5://[2001:db8::1]:1080`。凭据中的保留字符需 percent encoding；裸 `host:port` 必须先选择协议，不猜测有歧义的冒号分隔凭据格式。
+- 先预览有效、重复、错误行，再确认导入有效项。校验只解析格式，不连接代理或检测出口。每个代理生成稳定随机 `px_…` ID，可搜索、改标签、删除未引用项。变更地址需新增代理、迁移账号，再删旧项。
+- 账号卡可手动选择代理 ID；多选账号后可批量绑定或解绑。「随机分配未绑定账号」只填充没有绑定且没有外部代理的账号；选中账号时只作用于选中范围。代理可复用，分配先预览再保存；部分失败逐账号汇报，重试沿用原分配，不重新抽签。
+- 通过一次窄字段 PATCH 同时保存 `commandcode_proxy_id` 和原生 `proxy_url`，不覆盖整份认证文件。解绑删除 ID 并将 `proxy_url` 设为空字符串，表示继承宿主默认设置，**不是强制直连**。已有代理但无池 ID 时显示「外部设置」，不会自动接管。
+- 目录放在 `plugins.configs.commandcode-or-or-cliproxyapi.proxy-pool`，结构为 `schema-version: 1`、`proxies: [{id, label, url}]`；目录保存带 ETag/If-Match 防止旧页面覆盖。认证文件是绑定唯一来源。跨账号保存不是事务，页面会回读并区分成功、失败、未知；宿主字段 PATCH 没有同字段 CAS，其他管理页面同时修改仍可能产生竞争。
+
+**出口边界：**模型普通及流式调用通过 `host_callback_id` 继承 CPA 选中账号的 transport；原生测试已验证无全局代理时的两个 HTTP 出口与 SOCKS5 通路。但全局代理可能覆盖账号出口，宿主在代理初始化失败时也可能回退，因此不保证严格隔离或 fail-closed。额度查询、新账号验证和后台模型目录刷新仍使用宿主默认出口，不跟随账号绑定。保存成功不代表连接、代理健康、公网 IP 或 SOCKS5/SOCKS5H DNS 行为已验证。
+
+**凭据存储：**带密码的 URI 明文保存在 CPA 配置及认证文件中，已鉴权的管理页面会读取它们。列表对 userinfo 脱敏，页面不会把代理凭据写入 localStorage/sessionStorage，请保护服务器文件和管理权限。目录删除与账号绑定没有跨文件事务，其他管理员并发操作仍可能造成悬空 ID；页面会提示不匹配，不会自动清除账号已保存的代理 URL。
+
 ### reasoning effort（思考强度）
 
 目前没有已确认可供本插件读取的统一 thinking / effort 能力接口。旧探测时，`{base-url}/models` 只有 `id`、`object`、`created`、`owned_by`、`name`、`context_length`；2026-10-20 的公开目录已包含 `supported_endpoints`，它表示模型可用的请求接口，不等于思考强度声明。厂商客户端内置 effort 表和网关对 `low | medium | high | xhigh | max` 的接受情况来自 2026-09-17 的历史检查，不保证当前仍接受这些值，也不证明它们实际生效。
@@ -242,7 +256,15 @@ CPA_PLUGIN_LIBRARY=/绝对路径/commandcode-or-or-cliproxyapi.dylib \
 node tests/oauth_host.cjs
 ```
 
-设置 `CPA_BROWSER=1` 可同时驱动真实引导页，需以相同方式提供 Playwright。Linux 使用对应 `.so`，macOS 使用 `.dylib`。
+代理池页面模拟测试覆盖导入预览、凭据脱敏、ETag 冲突、仅未绑定账号随机分配、固定目标重试、部分失败以及窄屏/深色主题：
+
+```bash
+npx --yes -p playwright -c 'NODE_PATH=$(dirname $(dirname $(command -v playwright))) node tests/proxy_pool_page.cjs'
+```
+
+原生代理池测试会建立两个 HTTP 代理和一个只允许连接测试上游的 SOCKS5 mock。设置相同的 `CPA_HOST_BINARY`、`CPA_PLUGIN_LIBRARY` 后运行 `node tests/proxy_pool_host.cjs`；加上 `CPA_BROWSER=1` 可验证真实页面绑定。所有上游和代理端点均为本地 mock。
+
+设置 `CPA_BROWSER=1` 可同时驱动真实引导页，需以相同方式提供 Playwright。Linux 使用对应 `.so`，macOS 使用 `.dylib`，Windows 使用 `.dll`。
 也可通过 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 指定本机已有的 Chrome 可执行文件，跳过下载浏览器。
 
 ## 来源

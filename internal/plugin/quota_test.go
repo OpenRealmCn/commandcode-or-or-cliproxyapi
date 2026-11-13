@@ -22,7 +22,7 @@ func TestManagementRegistration(t *testing.T) {
 		Resources []struct{ Path, Menu, Description string } `json:"resources"`
 	}
 	decodeResult(t, mustHandle(t, m, pluginabi.MethodManagementRegister, []byte(`{}`)), &got)
-	if len(got.Routes) != 5 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" || got.Routes[1].Path != "/plugins/"+pluginName+"/accounts" {
+	if len(got.Routes) != 6 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" || got.Routes[1].Path != "/plugins/"+pluginName+"/accounts" {
 		t.Fatalf("routes = %+v", got.Routes)
 	}
 	if len(got.Resources) != 2 || got.Resources[0].Path != "/quota" || got.Resources[0].Menu != "CommandCode" || got.Resources[1].Path != "/oauth" {

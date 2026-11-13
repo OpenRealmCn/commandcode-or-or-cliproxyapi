@@ -66,6 +66,11 @@ type quotaCard struct {
 	Status           string      `json:"status"`
 	Usage            *quotaUsage `json:"usage,omitempty"`
 	Error            string      `json:"error,omitempty"`
+	ProxyID          string      `json:"proxy_id"`
+	ProxyDisplay     string      `json:"proxy_display"`
+	ProxyConfigured  bool        `json:"proxy_configured"`
+	ProxyReadError   bool        `json:"proxy_read_error"`
+	ProxyURLHash     string      `json:"proxy_url_hash"`
 }
 
 type quotaRequest struct {
@@ -194,6 +199,9 @@ func (m *Manager) HandleManagement(ctx context.Context, req pluginapi.Management
 	if req.Method != http.MethodPost {
 		return managementError(http.StatusNotFound, "not found")
 	}
+	if req.Path == "/v0/management/plugins/"+pluginName+"/proxy-pool/validate" {
+		return handleProxyValidation(req.Body)
+	}
 	ctx, cancel := context.WithTimeout(ctx, quotaMaxTimeout)
 	defer cancel()
 	for _, action := range []string{"complete", "session", "cancel"} {
@@ -221,15 +229,7 @@ func (m *Manager) HandleManagement(ctx context.Context, req pluginapi.Management
 	if body.KeyID == "" {
 		cards := make([]quotaCard, 0, len(files))
 		for _, entry := range files {
-			card := accountCard(entry)
-			if record, err := m.bridge.AuthGet(ctx, entry.AuthIndex); err == nil {
-				var stored struct {
-					Source string `json:"credential_source"`
-				}
-				if json.Unmarshal(record.JSON, &stored) == nil && (stored.Source == "api_key" || stored.Source == "browser_authorization") {
-					card.CredentialSource = stored.Source
-				}
-			}
+			card, _, _ := m.accountDetails(ctx, entry)
 			cards = append(cards, card)
 		}
 		return quotaJSON(quotaList{Cards: cards, LegacyAPIKeysIgnored: legacy})
@@ -238,12 +238,17 @@ func (m *Manager) HandleManagement(ctx context.Context, req pluginapi.Management
 		if entry.AuthIndex != body.KeyID {
 			continue
 		}
-		card := accountCard(entry)
-		key, err := authFileKey(ctx, m.bridge, entry)
+		card, raw, err := m.accountDetails(ctx, entry)
 		if err != nil {
 			card.Error = "无法读取此认证文件的 API key，请刷新账户列表"
 			return quotaJSON(card)
 		}
+		parsed, err := (authProvider{}).ParseAuth(ctx, pluginapi.AuthParseRequest{Provider: ProviderID, FileName: entry.Name, RawJSON: raw})
+		if err != nil || !parsed.Handled {
+			card.Error = "无法读取此认证文件的 API key，请刷新账户列表"
+			return quotaJSON(card)
+		}
+		key := parsed.Auth.Attributes["api_key"]
 		usage, account, email, err := fetchQuota(ctx, m.bridge, baseURL, timeout, key)
 		if err != nil {
 			card.Error = err.Error()

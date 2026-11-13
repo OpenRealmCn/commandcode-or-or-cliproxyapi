@@ -2,6 +2,47 @@
 
 User-facing change summary: [ChangeLog](CHANGELOG.md). Supported plans: **CommandCode GOAT / Pro / Max**, not CommandCode Go.
 
+## v0.2.4 — Account proxy pool (2026-11-13)
+
+### Proxy pool and account bindings
+
+- Add a persistent proxy directory for HTTP, HTTPS, SOCKS5 and SOCKS5H endpoints. Bulk text import has row-level validation and duplicate preview; proxy IDs are stable random identifiers and are independent of the proxy URL.
+- Add manual per-account proxy selection, selected-account batch updates and previewed random assignment for unbound accounts. Random mappings are fixed before save and preserved on retry; proxies may be reused.
+- Save the account's `commandcode_proxy_id` and native `proxy_url` together through CPA's narrow auth-fields patch. The auth file remains the binding source of truth; the pool stores the proxy directory only.
+- Protect directory updates with ETag/If-Match. Referenced proxies cannot be deleted or have their URL edited. Per-account outcomes are read back and reported; multi-auth updates are not a transaction.
+- The account page masks proxy userinfo, reports external/orphaned/mismatched settings, and warns about global-proxy conflicts and plaintext server-side storage.
+
+### Verified egress boundary
+
+This implementation uses CPA's HostBridge and existing auth proxy support. On CPA 8.0.69, isolated native-host tests verified two distinct HTTP proxy exits and a SOCKS5 proxy exit for model unary/stream calls when no global proxy overrides them. A configured global proxy can take precedence, and the host may fall back if proxy setup fails. This feature does not claim strict proxy isolation or fail-closed behavior. Quota requests, credential verification before account admission, and background catalog refresh still use the host's default transport. Saving a proxy is not a connectivity or egress test.
+
+Authenticated proxy URLs are plaintext in the host's config/auth files. The management page does not persist them in browser storage; visible summaries and errors redact userinfo.
+
+### Validation
+
+- `go test ./...` and `go vet ./...` pass.
+- `tests/proxy_pool_page.cjs` passes import/dedup/redaction, ETag conflict, random-unbound-only, partial-save retry, stale-account guard, empty-string unbinding and responsive/dark-theme checks.
+- `tests/proxy_pool_host.cjs` passes with CPA 8.0.69 and a locally built Windows amd64 C-shared plugin, covering ETag persistence, auth-field retention, HTTP/SOCKS5 unary and stream egress, default quota egress, global proxy precedence, restart and unbinding.
+- The host integration used only temporary config/auth directories and local mock upstream/proxy servers; it used no real credentials or external proxies.
+
+**中文**
+
+### 代理池与账号绑定
+
+- 新增 HTTP、HTTPS、SOCKS5、SOCKS5H 代理目录及逐行批量导入预览，展示有效、重复和错误项。代理 ID 随机生成且稳定，不由代理地址推导。
+- 支持账号手动绑定、所选账号批量设置，以及只针对未绑定账号的一键随机分配。先固定并展示映射再保存；失败重试沿用原映射，代理允许复用。
+- 通过 CPA 窄字段 PATCH 同次保存 `commandcode_proxy_id` 和原生 `proxy_url`；认证文件是绑定唯一真相，代理池仅保存代理目录。
+- 目录使用 ETag/If-Match 防止陈旧覆盖。被引用代理不可删除或修改地址。逐账号回读并报告结果；跨多个账号不具备事务原子性。
+- 账户页脱敏代理凭据，标注外部、悬空或不匹配设置，并提示全局代理冲突及服务器端明文存储风险。
+
+### 出口边界与验证
+
+实现只使用 CPA HostBridge 和现有原生账号代理。CPA 8.0.69 隔离真实宿主测试确认：无全局代理覆盖时，两个 HTTP 代理及 SOCKS5 代理都可分别用于模型普通/流式请求。非空全局代理可能优先，代理设置失败时宿主可能回退，因此不宣称严格隔离或 fail-closed。额度查询、新账号入库前核验及后台目录刷新仍使用宿主默认 transport，不跟随账号绑定。保存绑定不等于连通性或出口检测。
+
+带认证代理地址以明文保存在宿主配置和认证文件中；账户页不写入浏览器存储，列表和错误会脱敏 userinfo。
+
+验证：`go test ./...`、`go vet ./...`、`tests/proxy_pool_page.cjs`、CPA 8.0.69 原生 `tests/proxy_pool_host.cjs` 均通过。原生测试只使用临时配置/认证目录和本地 mock 上游、HTTP/SOCKS5 代理，不使用真实凭据或外部代理。
+
 ## v0.2.3 — Credential quota cooldown, adapter and auth fixes (2026-11-13)
 
 ### Bug fixes

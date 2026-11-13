@@ -224,7 +224,8 @@ jobs:
           sudo apt-get install -y clang lld
 
       - name: Prepare FreeBSD sysroot
-        timeout-minutes: 20
+        # 官方归档约 200 MiB，慢速镜像可能需要半小时以上，不能按十分钟截断重下。
+        timeout-minutes: 90
         env:
           FREEBSD_ARCH: ${{ matrix.goarch }}
           FREEBSD_RELEASE: 14.3-RELEASE
@@ -244,8 +245,8 @@ jobs:
             if curl --fail --location --show-error --retry 3 --retry-delay 2 \
                 --connect-timeout 20 --max-time 60 \
                 "${origin}/MANIFEST" -o "${toolchain_dir}/MANIFEST" && \
-              curl --fail --location --show-error --retry 3 --retry-delay 2 \
-                --connect-timeout 20 --max-time 600 \
+              curl --fail --location --show-error --retry 1 --retry-delay 2 \
+                --retry-max-time 60 --connect-timeout 20 --max-time 3600 \
                 "${origin}/base.txz" -o "${toolchain_dir}/base.txz"; then
               expected="$(awk '$1 == "base.txz" { print $2 }' "${toolchain_dir}/MANIFEST")"
               if [[ "${expected}" =~ ^[0-9a-fA-F]{64}$ ]] && \
