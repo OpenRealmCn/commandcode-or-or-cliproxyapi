@@ -158,6 +158,14 @@ Changing either surface means keeping both consistent; the plugin page never fet
 
 That error path could not have affected routing anyway: `FetchCredentialQuota` is a read-only management endpoint. CPA stops routing to a credential through executor cooldown reporting (see below), not through the quota surface. The plugin API exposes no RPC to set a cooldown or mark a credential unavailable; only `scheduler.pick` could influence selection, and that is a global scheduler, too invasive for this provider.
 
+### Quota observation policy (v0.2.5)
+
+`quota_cooldown.go` holds process-local observations keyed by provider base URL and API-key digest. Raw windows must remain separate from `applyWindowHierarchy` display copies. A finite positive-cap window triggers when rounded remaining percentage is zero (13.98/14 triggers, exactly 0.5% does not); unlimited and zero cap do not trigger. Monthly uses purchased credits in its existing balance calculation and only a valid future `currentPeriodEnd` as deadline; weekly/five-hour use first observation/failure plus seven days/five hours. Monthly > weekly > five-hour; repeated reads and healthy responses do not cancel or slide live timers. Expiry invalidates cached evidence before rechecking.
+
+Healthy/failed query TTLs are 60/10 seconds. Execution preflight is bounded to five seconds, skips whoami and fails open on retrieval failure without an active cooldown. Manual/standard quota reads force retrieval and record observations but remain display responses, never an exhaustion error. Same-key queries coalesce; do not hold Manager locks during network calls. Base changes/shutdown cancel stale flights. No auth-file persistence is used for cooldown state. The host can retain a longer timer and floors explicit quota hints at ten seconds.
+
+Local unsupported tools (including namespace), parameter/input conversion failures and generic HTTP 400 report `request_scoped`, HTTP 400, not retryable: the host contract skips cooldown and stops rotation. Namespace support is not added. Shared Translation is used for both requests and responses: executor remaps upstream response conversion failures to upstream failures and malformed stream conversion to `stream_truncated`, not client faults. Keep empty-user normalization/tests intact; do not drop tool result correlation or image content.
+
 ### Host SDK compatibility floor
 
 The plugin pins `declaredSchemaVersion = 6` (`internal/plugin/plugin.go`) instead of echoing `pluginabi.SchemaVersion` (10 in v8.0.67). Hosts reject a plugin whose schema **exceeds** their own, so declaring the newest SDK value would reject every host older than v8.0.50 for features this plugin never calls. Schema 6 is what the plugin actually uses: raw management JSON bodies, plus the cooldown error fields.
@@ -171,7 +179,7 @@ Verify against the SDK before changing: check that `RetryAfterSeconds`, `Credent
 
 ### Cooldown semantics (why error classification matters)
 
-CPA decides cooldown scope and duration from four envelope fields, so the plugin's job is to report the vendor's error faithfully — never to invent cooling policy. `errclass/upstream.go` encodes this; the shapes were recovered from the vendor CLI (`command-code 1.88.5`, `dist/cli.mjs`: `parseWindowLimitError`, `classifyKind`, `parseSpendCapError`), not guessed.
+CPA decides cooldown scope and duration from four envelope fields. Upstream errors are classified by `errclass/upstream.go`; since v0.2.5 the user-selected account quota policy in `quota_cooldown.go` may supply a fixed deadline backed by a raw quota snapshot. `errclass/upstream.go` encodes this; the shapes were recovered from the vendor CLI (`command-code 1.88.5`, `dist/cli.mjs`: `parseWindowLimitError`, `classifyKind`, `parseSpendCapError`), not guessed.
 
 | Upstream condition | Reported as | CPA effect |
 |---|---|---|

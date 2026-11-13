@@ -83,7 +83,7 @@ func TestFromNetwork(t *testing.T) {
 
 func TestTranslation(t *testing.T) {
 	e := Translation("cannot map tool calls")
-	if e.Class != ClassTranslation || e.Retryable || e.StatusCode != 0 {
+	if e.Class != ClassTranslation || e.Retryable || e.StatusCode != 400 || e.WireCode != pluginabi.ErrorCodeRequestScoped {
 		t.Errorf("Translation() = %+v", e)
 	}
 }

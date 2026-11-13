@@ -1004,7 +1004,7 @@ func TestExecuteNativePassthroughMalformedUpstream(t *testing.T) {
 	st.setMessagesBody("{definitely not json")
 	env := mustExecute(t, m, "commandcode/qwen3.7-max", "claude",
 		[]byte(`{"model":"commandcode/qwen3.7-max","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`))
-	if env.OK || env.Error == nil || env.Error.Code != "translation_failure" {
+	if env.OK || env.Error == nil || env.Error.Code != "upstream_server_failure" || !env.Error.Retryable {
 		t.Fatalf("envelope = %+v", env.Error)
 	}
 }
@@ -1126,7 +1126,7 @@ func TestResponsesUnsupportedFeatureDescriptive(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	env := decodeEnv(t, resp)
-	if env.OK || env.Error == nil || env.Error.Code != "unsupported_protocol_or_parameter" {
+	if env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped || env.Error.HTTPStatus != 400 || env.Error.Retryable {
 		t.Fatalf("envelope = %s", resp)
 	}
 	if !strings.Contains(env.Error.Message, "web_search") || !strings.Contains(env.Error.Message, "/v1/responses") {

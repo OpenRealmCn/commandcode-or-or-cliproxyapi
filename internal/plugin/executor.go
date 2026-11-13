@@ -120,6 +120,9 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	debugTrace("executor sending non-stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
 	defer cancel()
+	if quotaErr := m.preflightQuota(ctx, res); quotaErr != nil {
+		return classEnvelope(quotaErr), nil
+	}
 	resp, err := m.bridge.doWithCallbackID(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
@@ -132,15 +135,15 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	}
 	debugTrace("executor received non-stream status=%d body_len=%d", resp.StatusCode, len(resp.Body))
 	if resp.StatusCode >= 400 {
-		return classEnvelope(shared.UpstreamStatusErrorWithHeaders(resp.StatusCode, resp.Body, resp.Headers)), nil
+		return classEnvelope(m.quotaFailure(ctx, res, shared.UpstreamStatusErrorWithHeaders(resp.StatusCode, resp.Body, resp.Headers))), nil
 	}
 	// Parse/envelope guard only; true OOM prevention belongs to the host transport's byte cap.
 	if int64(len(resp.Body)) > res.cfg.MaxResponseBytes {
-		return classEnvelope(errclass.Translation("response exceeds max-response-bytes")), nil
+		return classEnvelope(upstreamConversionError(errclass.Translation("response exceeds max-response-bytes"))), nil
 	}
 	converted, eErr := convertNonStream(res.rec.Protocol, req.SourceFormat, resp.StatusCode, resp.Body)
 	if eErr != nil {
-		return classEnvelope(eErr), nil
+		return classEnvelope(upstreamConversionError(eErr)), nil
 	}
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: converted, Headers: resp.Headers}), nil
 }
@@ -323,6 +326,16 @@ func classEnvelope(e *errclass.Error) []byte {
 	return out
 }
 
+// upstreamConversionError rewrites translation errors while decoding a 2xx
+// upstream response: the client request already passed conversion and the
+// malformed payload belongs to the upstream. It must not stop key rotation.
+func upstreamConversionError(e *errclass.Error) *errclass.Error {
+	if e == nil || e.Class != errclass.ClassTranslation {
+		return e
+	}
+	return errclass.UpstreamFallback(e.Message)
+}
+
 // streamConverter is the common shape of the three adapters' stream
 // converters: feed one upstream SSE chunk, get translated client events.
 type streamConverter interface {
@@ -383,6 +396,9 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	debugTrace("executor sending stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
 	defer cancel()
+	if quotaErr := m.preflightQuota(ctx, res); quotaErr != nil {
+		return classEnvelope(quotaErr), nil
+	}
 	st, respHeaders, id, err := m.bridge.doStreamWithCallbackID(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
@@ -401,7 +417,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		}
 		// Headers carry the upstream Retry-After hint, which CPA turns into the
 		// cooldown deadline for this credential or model.
-		return classEnvelope(shared.UpstreamStatusErrorWithHeaders(st, body, respHeaders)), nil
+		return classEnvelope(m.quotaFailure(ctx, res, shared.UpstreamStatusErrorWithHeaders(st, body, respHeaders))), nil
 	}
 
 	downID := req.StreamID
@@ -577,7 +593,7 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 			// (a malformed chunk, a plain upstream hiccup) stays a
 			// post-first-byte truncation: no cooldown, no replay.
 			if significantStreamConvError(convErr) {
-				fwd := *convErr
+				fwd := *m.quotaFailure(context.Background(), res, convErr)
 				if emittedAny {
 					// Bytes already reached the client; a replay would deliver
 					// them twice, so a forwarded classification must never
@@ -641,7 +657,8 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 // the cooldown pipeline sees the real reason; everything else collapses to a
 // post-first-byte truncation.
 func significantStreamConvError(e *errclass.Error) bool {
-	if e == nil {
+	if e == nil || e.Class == errclass.ClassTranslation {
+		// Feed 解码的是上游响应：其 JSON 损坏不能反向归咎客户端请求。
 		return false
 	}
 	if e.CredentialScoped {

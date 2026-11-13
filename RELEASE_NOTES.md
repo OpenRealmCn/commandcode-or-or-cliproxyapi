@@ -2,6 +2,26 @@
 
 User-facing change summary: [ChangeLog](CHANGELOG.md). Supported plans: **CommandCode GOAT / Pro / Max**, not CommandCode Go.
 
+## v0.2.5 — Request error scope and quota cooldown (2026-11-14)
+
+**中文**
+
+- 修复 `user message must have content`：三种请求协议统一清理空 user 消息和空文本块，保留工具结果、图片及有效内容。
+- 修复不支持的 `namespace` 等工具、参数及本地请求转换错误触发账号轮换和误冷却的问题。现在返回 HTTP 400、`request_scoped`、不可重试；未新增 namespace 工具支持。上游鉴权、封禁、额度和限流错误仍按各自作用域处理。
+- 按原始配额的整数剩余百分比四舍五入为 0% 判断冷却，优先级月 → 周 → 5-hour。月冷却到有效未来订阅 `currentPeriodEnd`，缺失/无效时不设月度期限；周和 5-hour 从首次观察/失败分别起算 7 天、5 小时。同一轮冷却不因重复查询续期，到期取新快照重新评估。
+- 状态仅保存在插件内存，重启后重新查询。健康/失败快照缓存为 60/10 秒；执行前额度检查最多 5 秒，查询失败时不凭空冷却账号。额度查询页面仍返回完整快照，不把耗尽当作取数失败。
+- 补齐 Chat 原生 SSE 和 Responses 嵌套额度错误分类；上游响应损坏不归咎客户端，已输出内容后不重试。CPA 自身最低冷却和已保留的更长期限仍可能影响实际恢复时间。
+- 本地验证：全量 Go 测试、go vet、空 user/请求作用域/配额冷却回归。5 小时和 7 天到期使用假时钟验证，不是真实长期等待。
+
+**English**
+
+- Filter empty user messages and text blocks across all three request formats while preserving tool results, images and meaningful content.
+- Report unsupported tools such as namespace and local request-conversion failures as non-retryable HTTP 400 `request_scoped`, preventing credential rotation and cooldown. Namespace tools remain unsupported; authentication, account bans, quota and rate limits retain their separate scope.
+- Use rounded-zero remaining quota with monthly → weekly → five-hour precedence. Monthly cooldown ends at a valid future subscription `currentPeriodEnd`; no monthly deadline is invented without one. Weekly/five-hour cooldowns start at first observation/failure plus seven days/five hours. Repeated reads never extend a round; expiry requires a fresh quota read.
+- State is process-local. Healthy/failed reads cache for 60/10 seconds; execution preflight has a five-second budget and retrieval failure does not invent cooldown. Exhausted quota cards remain readable.
+- Observe native Chat SSE and nested Responses quota errors. Do not blame clients for malformed upstream responses or retry after downstream output. CPA minimum and retained longer deadlines can affect actual recovery.
+- Validation includes Go tests, go vet and regression tests. Long cooldown expiry is tested with an injected clock rather than real multi-hour waits.
+
 ## v0.2.4 — Account proxy pool (2026-11-13)
 
 ### Proxy pool and account bindings

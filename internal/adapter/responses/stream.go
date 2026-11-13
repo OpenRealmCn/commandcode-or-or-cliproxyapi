@@ -645,7 +645,8 @@ func (sc *StreamConverter) captureResponse(resp *responseMeta) {
 
 // failureError maps response.failed / error events onto FR-009 classes,
 // honoring an upstream status_code when present (§7 semantics); without
-// one the failure is treated as a retryable upstream server failure.
+// one, only recognized credential-quota errors override the retryable
+// upstream server fallback.
 // Fix #18: uses FromUpstream to preserve vendor error codes and rate-limit
 // metadata for accurate cooldown scope.
 func failureError(ev *failureEvent, rawJSON []byte) *errclass.Error {
@@ -653,11 +654,24 @@ func failureError(ev *failureEvent, rawJSON []byte) *errclass.Error {
 	if status == 0 {
 		status = int(ev.Response.StatusCode)
 	}
-	if status > 0 {
-		// Fix #18: hand the raw vendor error JSON to FromUpstream so a
-		// structured code / rateLimit is parsed and preserved (cooldown scope
-		// and retry timing), instead of classifying on the status alone.
-		return errclass.FromUpstream(status, rawJSON)
+	// FromUpstream understands error, but not Responses' response.error.
+	// Normalize that wrapper locally without changing errclass's wire parser.
+	var envelope struct {
+		Error    json.RawMessage `json:"error"`
+		Response struct {
+			Error json.RawMessage `json:"error"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(rawJSON, &envelope) == nil &&
+		(len(envelope.Error) == 0 || string(envelope.Error) == "null") &&
+		len(envelope.Response.Error) > 0 {
+		rawJSON, _ = json.Marshal(map[string]json.RawMessage{"error": envelope.Response.Error})
+	}
+	// Keep opaque status-less failures on their original fallback; only a
+	// vendor quota signal can supply credential scope and a reset hint.
+	classified := errclass.FromUpstream(status, rawJSON)
+	if status > 0 || classified.CredentialScoped {
+		return classified
 	}
 	// No status anywhere in the event: an opaque upstream failure, treated as
 	// a retryable upstream server error (StatusCode 0) exactly as before.

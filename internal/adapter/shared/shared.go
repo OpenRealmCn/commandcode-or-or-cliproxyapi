@@ -1872,19 +1872,13 @@ func OpenAIImageURL(raw json.RawMessage) (string, *errclass.Error) {
 // UnsupportedFormat reports a source protocol no translator in the calling
 // adapter handles, naming the target endpoint.
 func UnsupportedFormat(format, target string) *errclass.Error {
-	return &errclass.Error{
-		Class:   errclass.ClassUnsupported,
-		Message: fmt.Sprintf("source protocol %q cannot be translated to %s", format, target),
-	}
+	return errclass.Unsupported(fmt.Sprintf("source protocol %q cannot be translated to %s", format, target))
 }
 
 // UnsupportedPartType reports a client content-block/part type the target
 // endpoint cannot represent (ClassUnsupported; FR-005 explicit policy).
 func UnsupportedPartType(partType, target string) *errclass.Error {
-	return &errclass.Error{
-		Class:   errclass.ClassUnsupported,
-		Message: fmt.Sprintf("unsupported content block type %q for %s", partType, target),
-	}
+	return errclass.Unsupported(fmt.Sprintf("unsupported content block type %q for %s", partType, target))
 }
 
 // NormalizeResponsesItemType implements the OpenAI Responses compact-item
@@ -1907,11 +1901,7 @@ func NormalizeResponsesItemType(item RespItem) string {
 // treat a client-body problem as a retryable upstream failure and burn the
 // rest of the key pool.
 func UnsupportedInputItemType(itemType string) *errclass.Error {
-	return &errclass.Error{
-		Class:      errclass.ClassUnsupported,
-		Message:    fmt.Sprintf("unsupported Responses input item type %q", itemType),
-		StatusCode: 400,
-	}
+	return errclass.Unsupported(fmt.Sprintf("unsupported Responses input item type %q", itemType))
 }
 
 // IsContentPartType reports whether an OpenAI-style content part type is
@@ -1932,19 +1922,13 @@ func IsContentPartType(partType string) bool {
 // naming the target endpoint. One kernel serves all three adapters so
 // the error class cannot diverge again.
 func ValidateContentPart(partType, target string) *errclass.Error {
-	return &errclass.Error{
-		Class:   errclass.ClassUnsupported,
-		Message: fmt.Sprintf("unsupported content part type %q for %s", partType, target),
-	}
+	return errclass.Unsupported(fmt.Sprintf("unsupported content part type %q for %s", partType, target))
 }
 
 // ValidateRole rejects a message role no translator in the calling
 // adapter handles, same FR-009 class and rationale as ValidateContentPart.
 func ValidateRole(role, target string) *errclass.Error {
-	return &errclass.Error{
-		Class:   errclass.ClassUnsupported,
-		Message: fmt.Sprintf("unsupported message role %q for %s", role, target),
-	}
+	return errclass.Unsupported(fmt.Sprintf("unsupported message role %q for %s", role, target))
 }
 
 // SystemImageRejected reports image content inside a system/instruction
@@ -2059,10 +2043,7 @@ func (a *OutputAssembler) Render() []any {
 // themselves from their own raw field.
 func FunctionTool(toolType, targetLabel string) *errclass.Error {
 	if toolType != "function" {
-		return &errclass.Error{
-			Class:   errclass.ClassUnsupported,
-			Message: fmt.Sprintf("unsupported tool type %q; only function tools translate to %s", toolType, targetLabel),
-		}
+		return errclass.Unsupported(fmt.Sprintf("unsupported tool type %q; only function tools translate to %s", toolType, targetLabel))
 	}
 	return nil
 }

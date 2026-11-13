@@ -39,8 +39,8 @@ type Error struct {
 	// WireCode overrides Class on the envelope when the host recognizes a
 	// machine-readable code (pluginabi.ErrorCode*). Empty means Class is used.
 	WireCode string
-	// RetryAfterSeconds is upstream retry guidance. Admitted only when the
-	// response carried it; a fabricated value would be worse than none.
+	// RetryAfterSeconds 来自上游提示或用户指定的账号配额冷却策略。
+	// 配额策略只使用已观察到的原始窗口和固定截止时间，不因重复请求续期。
 	RetryAfterSeconds int
 	// CredentialScoped marks failures that condemn the whole credential
 	// (account-wide quota/window exhaustion) rather than one model.
@@ -89,6 +89,9 @@ func FromStatus(status int, message string) *Error {
 	if status >= 500 {
 		return &Error{Class: ClassUpstream, Message: msg, StatusCode: status, Retryable: true}
 	}
+	if status == 400 {
+		return RequestScoped(ClassUnsupported, msg)
+	}
 	return &Error{Class: ClassUnsupported, Message: msg, StatusCode: status}
 }
 
@@ -127,9 +130,27 @@ func PostFirstByteNetwork(msg string) *Error {
 	}
 }
 
+// RequestScoped reports a client request/translation failure that CPA must not
+// retry on another credential or use to cool an account. The source-specific
+// Class remains available internally while WireCode selects CPA's contract.
+func RequestScoped(class Class, msg string) *Error {
+	return &Error{
+		Class:      class,
+		Message:    Redact(msg),
+		StatusCode: 400,
+		Retryable:  false,
+		WireCode:   pluginabi.ErrorCodeRequestScoped,
+	}
+}
+
+// Unsupported reports a local protocol or parameter the adapter cannot represent.
+func Unsupported(msg string) *Error {
+	return RequestScoped(ClassUnsupported, msg)
+}
+
 // Translation reports an FR-005/FR-006 translation failure; never retryable.
 func Translation(msg string) *Error {
-	return &Error{Class: ClassTranslation, Message: Redact(msg)}
+	return RequestScoped(ClassTranslation, msg)
 }
 
 // UpstreamFallback builds a ClassUpstream error for the adapter fallback

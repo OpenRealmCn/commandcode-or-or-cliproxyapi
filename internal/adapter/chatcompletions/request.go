@@ -36,6 +36,15 @@ func AuthHeaders(key string) http.Header {
 // input is ClassTranslation. Errors are descriptive and redacted — no
 // silent loss of tools or reasoning controls.
 func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+	field := "messages"
+	if sourceFormat == "openai-response" {
+		field = "input"
+	}
+	var normalizeErr *errclass.Error
+	sourceBody, normalizeErr = shared.RemoveEmptyUserContent(sourceBody, field)
+	if normalizeErr != nil {
+		return nil, normalizeErr
+	}
 	switch sourceFormat {
 	case "openai":
 		return buildOpenAIRequest(upstreamModel, sourceBody)

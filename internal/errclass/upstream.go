@@ -629,13 +629,14 @@ func isModelNotInPlan(lowered string) bool {
 }
 
 // isRequestDefect matches failures caused by the request body itself. It is
-// deliberately NOT called for 429 responses (rate-limit wording such as "rate
-// limit exceeded for max_tokens per minute" must not become request_scoped).
-// The status parameter enforces that guard.
+// deliberately excludes credential/auth/billing/rate-limit statuses: text
+// mentioning a request parameter must not erase those authoritative failures.
 func isRequestDefect(status int, lowered string) bool {
-	// 429 responses are NEVER request defects — they are admission/capacity
-	// failures and must remain in the rate-limit family.
-	if status == http.StatusTooManyRequests {
+	// Credential failures remain retryable on another account, even if their
+	// message mentions a parameter such as max_tokens. A 429 must likewise
+	// remain in the rate-limit family, not become a request defect.
+	switch status {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
 		return false
 	}
 	switch {

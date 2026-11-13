@@ -2,6 +2,23 @@
 
 本文件记录面向使用者的更新摘要。详细版本历史见 [RELEASE_NOTES.md](RELEASE_NOTES.md)，操作步骤见 [中文说明](README.zh-CN.md) / [English README](README.md)。
 
+## v0.2.5 — 2026-11-14
+
+- 修复空 `user` 消息及空文本块导致的 `user message must have content`，覆盖三个协议入口；保留工具结果、图片、有效文本和未知内容块。
+- 修复 `namespace` 等不支持工具、参数或请求转换失败引发的账号轮换与误冷却：上报 HTTP 400、`request_scoped`、不可重试。并未新增 namespace 工具支持。
+- 新增配额冷却策略：原始剩余百分比四舍五入为 0% 时，按月 → 周 → 5-hour 判断；月到有效未来 `currentPeriodEnd`，周从首次观察起 7 天，5-hour 起 5 小时。重复查询不延期，到期重新查询；无有效月日期不伪造月期限。
+- 配额状态仅进程内保存，重启后重查；健康快照缓存 60 秒、失败缓存 10 秒、执行预检最多 5 秒。查询失败不凭空冷却账号；额度页面仍返回完整快照。
+- 补齐原生 Chat SSE 错误观察和 Responses 嵌套错误分类；普通断流不算额度耗尽，已输出内容后不重试。
+- CPA 最低冷却时间及已有更长冷却可能影响实际解除时间，插件不承诺精确解锁。
+
+### v0.2.5 English highlights — 2026-11-14
+
+- Remove empty user messages/text blocks across the three request formats while preserving tool results, images, meaningful text and unknown blocks.
+- Report unsupported tools (including namespace), parameters and local input conversion failures as non-retryable HTTP 400 `request_scoped`: no credential rotation or cooldown. Namespace tools are still unsupported.
+- Add rounded-zero quota cooldowns, prioritized monthly → weekly → five-hour: valid subscription `currentPeriodEnd`, first observation plus seven days, or first observation plus five hours. Repeated reads do not extend deadlines; expiry requires a fresh quota read. No monthly deadline is invented when the subscription date is unavailable.
+- Keep observations in memory only; healthy/failed reads cache for 60/10 seconds and execution preflight is bounded to five seconds. Retrieval failures do not invent account cooldowns; quota cards remain readable.
+- Observe quota errors in native Chat SSE and nested Responses failures; do not retry after downstream output. Actual recovery remains subject to CPA's minimum and retained longer cooldowns.
+
 ## v0.2.4 — 2026-11-13
 
 - 新增**代理池管理**：支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H 代理；可按行导入、预览去重与错误、使用稳定 ID 管理代理。

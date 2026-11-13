@@ -249,7 +249,7 @@ func (m *Manager) HandleManagement(ctx context.Context, req pluginapi.Management
 			return quotaJSON(card)
 		}
 		key := parsed.Auth.Attributes["api_key"]
-		usage, account, email, err := fetchQuota(ctx, m.bridge, baseURL, timeout, key)
+		usage, account, email, err := m.observedQuota(ctx, baseURL, timeout, key)
 		if err != nil {
 			card.Error = err.Error()
 			return quotaJSON(card)
@@ -308,6 +308,14 @@ func AccountAPIBase(baseURL string) (string, error) {
 // file. Both are best-effort — a key still shows its windows when only the
 // credit call succeeds.
 func fetchQuota(ctx context.Context, bridge *HostBridge, baseURL string, timeout time.Duration, key string) (quotaUsage, string, string, error) {
+	usage, label, email, err := fetchQuotaRaw(ctx, bridge, baseURL, timeout, key, true)
+	applyWindowHierarchy(&usage)
+	return usage, label, email, err
+}
+
+// fetchQuotaRaw 保留各窗口独立状态；层级折叠只能用于显示，不能启动短窗口计时器。
+// 执行预检不查询 whoami，避免正常模型调用承担不必要的身份查询。
+func fetchQuotaRaw(ctx context.Context, bridge *HostBridge, baseURL string, timeout time.Duration, key string, identity bool) (quotaUsage, string, string, error) {
 	if bridge == nil {
 		return quotaUsage{}, "", "", fmt.Errorf("account bridge unavailable")
 	}
@@ -373,10 +381,9 @@ func fetchQuota(ctx context.Context, bridge *HostBridge, baseURL string, timeout
 	if usage.Month != nil {
 		usage.Month.ResetsAt = periodEndRFC3339(periodEnd)
 	}
-	// Fold the shorter windows under an exhausted longer one before anyone
-	// reads the snapshot, so the plugin page, the stdlib quota provider and
-	// availability decisions all see the same numbers.
-	applyWindowHierarchy(&usage)
+	if !identity {
+		return usage, label, email, nil
+	}
 	if raw, errWho := get(accountWhoamiPath); errWho == nil {
 		var who accountWhoami
 		if json.Unmarshal(raw, &who) == nil {

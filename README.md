@@ -203,6 +203,14 @@ Both surfaces read the same account API on the same authority as `base-url`:
 
 **Known email-sync limitation**: after discovering an email, the plugin attempts to update the original auth file so both pages can display it. It checks for prior deletion or changes, but the final check and file replacement are not atomic with host edits. Concurrent deletion, disabling, or metadata edits can be overwritten, and a deleted file can be recreated. Keeping email on both pages retains this risk. Wait for quota refreshes to finish before editing auth files, then reload the list to confirm the result.
 
+### Quota cooldown and request errors (v0.2.5)
+
+Model execution checks account quota before sending the model request. The policy uses rounded remaining percentage: less than 0.5% rounds to 0% (13.98/14.00 triggers). Monthly takes priority over weekly and five-hour. Monthly cooldown ends at a valid future subscription `currentPeriodEnd`; without that date no monthly deadline is invented. Weekly/five-hour cooldowns run for seven days/five hours from first observation or failure. Repeated reads do not extend a live deadline; expiry invalidates the old snapshot and requires a fresh read. Observations are process-local and are lost on restart. Distinct API keys are tracked separately, even if owned by the same upstream account.
+
+Healthy results cache for 60 seconds and retrieval failures for 10 seconds. Execution preflight has a five-second budget, skips identity lookup and allows model execution if retrieval fails without an active cooldown. Manual quota refresh continues retrieving full cards and recording observations, but it cannot directly pause CPA routing: the next executor refusal reports credential-scoped 429. Unlimited/zero-cap windows and available purchased monthly credits are protected. CPA's minimum or retained longer cooldown may delay recovery beyond the plugin deadline; this is temporary availability, not `disabled: true`. Quota requests still use host default egress, not the account proxy.
+
+Unsupported tools such as `namespace`, invalid input and local translation errors return non-retryable HTTP 400 `request_scoped`, stopping rotation without cooling credentials. This does not implement namespace tools. Authentication/account restrictions and genuine upstream quota/rate limits keep their original scope. Empty user messages/text blocks are removed without deleting tool results or images; malformed upstream responses are not blamed on the client.
+
 ### Account proxy pool
 
 Open **CommandCode accounts and quota → Proxy pool and account egress**. This feature requires the host's v8 configuration API with ETag support and its auth-file field PATCH API; it has been integration-tested with CPA 8.0.69. Older hosts can keep using account and quota features, but proxy-pool management is disabled when the required APIs are unavailable.

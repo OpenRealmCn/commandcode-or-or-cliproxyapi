@@ -126,6 +126,17 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 func (sc *StreamConverter) handleLine(line string) ([][]byte, *errclass.Error) {
 	switch sc.sourceFormat {
 	case "openai":
+		// Inspect only explicit error objects; ordinary payloads keep the
+		// permissive, byte-preserving passthrough path.
+		if data, ok := sseData(line); ok {
+			var envelope map[string]json.RawMessage
+			if json.Unmarshal([]byte(data), &envelope) == nil &&
+				bytes.HasPrefix(bytes.TrimSpace(envelope["error"]), []byte("{")) {
+				if _, eErr := sc.decodeChunk(data); eErr != nil {
+					return nil, eErr
+				}
+			}
+		}
 		return sc.passthroughLine(line), nil
 	case "claude":
 		return sc.claudeLine(line)
@@ -308,11 +319,6 @@ func chunkError(e *ccChunkError) *errclass.Error {
 			status = 429
 		}
 	}
-	if status == 0 {
-		// No status signal at all: an opaque upstream failure, retryable
-		// with StatusCode 0 exactly as before.
-		return errclass.UpstreamFallback(e.Message)
-	}
 	// Rebuild a well-formed vendor envelope rather than re-marshalling e:
 	// FromUpstream decodes code as a string, so a numeric code would fail the
 	// whole decode; rateLimit rides along for credential-scoped cooldown.
@@ -322,7 +328,14 @@ func chunkError(e *ccChunkError) *errclass.Error {
 		inner["rateLimit"] = e.RateLimit
 	}
 	raw, _ := json.Marshal(map[string]any{"error": inner})
-	return errclass.FromUpstream(status, raw)
+	// rateLimit alone identifies window exhaustion without code/message.
+	// Let the existing classifier decide scope before preserving the opaque
+	// status-less fallback for everything else.
+	classified := errclass.FromUpstream(status, raw)
+	if status == 0 && !classified.CredentialScoped {
+		return errclass.UpstreamFallback(e.Message)
+	}
+	return classified
 }
 
 // ---- Chat Completions -> claude (Anthropic Messages) stream (FR-006) ----

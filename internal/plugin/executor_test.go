@@ -149,6 +149,10 @@ func wrapWithCatalog(catalogBody string, next func(string, []byte) ([]byte, erro
 		if method == pluginabi.MethodHostHTTPDo {
 			if url, _ := wire["url"].(string); strings.HasSuffix(url, "/models") {
 				return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(catalogBody)}), nil
+			} else if strings.Contains(url, "/alpha/billing/") {
+				// 既有执行器用例不提供配额服务；明确失败以测试预检失败放行，
+				// 避免把 mock 的模型响应错误地当作额度数据。
+				return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusServiceUnavailable}), nil
 			}
 		}
 		return next(method, payload)
@@ -334,7 +338,7 @@ func TestExecutorSessionFallbackAndMalformedInput(t *testing.T) {
 				t.Fatalf("handle: %v", err)
 			}
 			env := decodeEnv(t, resp)
-			if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassTranslation) {
+			if env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped || env.Error.HTTPStatus != 400 || env.Error.Retryable {
 				t.Fatalf("envelope = %s", resp)
 			}
 			if len(f.callsOf(pluginabi.MethodHostHTTPDo)) != beforeDo || len(f.callsOf(pluginabi.MethodHostHTTPDoStream)) != beforeStream {
@@ -427,8 +431,33 @@ func TestExecuteUnknownModelIs404Envelope(t *testing.T) {
 func TestExecuteUnsupportedSourceFormat(t *testing.T) {
 	m, _ := newExecManager(t)
 	env := mustExecute(t, m, "commandcode/glm-5.3", "bogus-format", []byte(ccRequestBody))
-	if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassUnsupported) {
+	if env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped || env.Error.HTTPStatus != http.StatusBadRequest || env.Error.Retryable || env.Error.CredentialScoped {
 		t.Fatalf("envelope = %+v", env.Error)
+	}
+}
+
+func TestExecuteUnsupportedNamespaceToolDoesNotReachUpstream(t *testing.T) {
+	m, f := newExecManager(t)
+	body := []byte(`{"model":"x","input":[{"role":"user","content":"find files"}],"tools":[{"type":"namespace","name":"files","namespace":{"type":"object"}}]}`)
+	env := mustExecute(t, m, "commandcode/glm-5.3", "openai-response", body)
+	if env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped || env.Error.HTTPStatus != http.StatusBadRequest || env.Error.Retryable || env.Error.CredentialScoped {
+		t.Fatalf("unsupported tool envelope = %+v, want request_scoped 400 with no retry/cooldown", env.Error)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostHTTPDo)); got != 1 {
+		t.Fatalf("model HTTP calls = %d, want catalog fetch only (request must not reach upstream)", got)
+	}
+}
+
+func TestUpstreamResponseConversionFailureRemainsRetryable(t *testing.T) {
+	f := &fakeCaller{responder: wrapWithCatalog(testCatalogJSON, upstreamRouter(t, map[string]string{"/v1/chat/completions": "{bad"}))}
+	m := NewManager(NewHostBridge(f.call))
+	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+	if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
+		t.Fatal(err)
+	}
+	env := mustExecute(t, m, "commandcode/glm-5.3", "openai", []byte(ccRequestBody))
+	if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassUpstream) || !env.Error.Retryable || env.Error.HTTPStatus != 0 {
+		t.Fatalf("malformed successful upstream response = %+v, want retryable upstream failure", env.Error)
 	}
 }
 
@@ -602,7 +631,7 @@ func TestExecuteStreamRoutedFromBothMethods(t *testing.T) {
 		if err != nil {
 			t.Fatalf("execute_stream bad format: %v", err)
 		}
-		if env := decodeEnv(t, resp); env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassUnsupported) {
+		if env := decodeEnv(t, resp); env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped {
 			t.Fatalf("bad-format execute_stream envelope = %s", resp)
 		}
 	})
@@ -1410,7 +1439,7 @@ func TestExecutorIdentifierAndCountTokens(t *testing.T) {
 		t.Fatalf("count_tokens: %v", err)
 	}
 	env = decodeEnv(t, resp)
-	if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassUnsupported) {
+	if env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped {
 		t.Fatalf("count_tokens envelope = %s", resp)
 	}
 	// executor.http_request has no handler either: it must classify as
@@ -1420,7 +1449,7 @@ func TestExecutorIdentifierAndCountTokens(t *testing.T) {
 		t.Fatalf("http_request: %v", err)
 	}
 	env = decodeEnv(t, resp)
-	if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassUnsupported) {
+	if env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped {
 		t.Fatalf("http_request envelope = %s", resp)
 	}
 	if !strings.Contains(env.Error.Message, "executor.http_request") {
@@ -1474,7 +1503,7 @@ func TestExecuteMaxResponseBytesGuard(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	env := mustExecute(t, m, "commandcode/glm-5.4", "openai", []byte(ccRequestBody))
-	if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassTranslation) {
+	if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassUpstream) {
 		t.Fatalf("envelope = %+v", env.Error)
 	}
 }
@@ -1562,7 +1591,7 @@ func TestExecuteMalformedUpstreamStatusUsesSelectedKey(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	env := mustExecute(t, m, "commandcode/glm-5.3", "openai", []byte(ccRequestBody))
-	if env.OK || env.Error == nil || env.Error.Code != "unsupported_protocol_or_parameter" || env.Error.HTTPStatus != http.StatusBadRequest {
+	if env.OK || env.Error == nil || env.Error.Code != pluginabi.ErrorCodeRequestScoped || env.Error.HTTPStatus != http.StatusBadRequest {
 		t.Fatalf("envelope = %+v", env.Error)
 	}
 	if len(seen) != 1 || seen[0] != pluginabi.MethodHostHTTPDo {

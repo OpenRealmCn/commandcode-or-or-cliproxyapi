@@ -25,7 +25,7 @@ const ProviderID = "commandcode"
 // pluginName / pluginVersion are reported in registration metadata.
 const (
 	pluginName    = "commandcode-or-or-cliproxyapi"
-	pluginVersion = "0.2.4"
+	pluginVersion = "0.2.5"
 )
 
 // githubRepoURL satisfies the host's validPlugin gate (host.go
@@ -59,7 +59,8 @@ const declaredSchemaVersion uint32 = 6
 // Manager owns dispatcher state (config snapshot, catalog manager, refresh
 // loop) and routes every RPC method. Safe for concurrent HandleCall use.
 type Manager struct {
-	bridge *HostBridge // immutable after NewManager
+	bridge        *HostBridge // immutable after NewManager
+	quotaCooldown *quotaCooldownManager
 
 	// lifeMu serializes whole register/reconfigure/shutdown sequences so
 	// their stop-wait-install steps cannot interleave into orphaned tickers.
@@ -167,15 +168,9 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 	case pluginabi.MethodExecutorIdentifier:
 		return okEnvelope(map[string]string{"identifier": ProviderID}), nil
 	case pluginabi.MethodExecutorCountTokens:
-		return classEnvelope(&errclass.Error{
-			Class:   errclass.ClassUnsupported,
-			Message: "executor.count_tokens has no CommandCode equivalent",
-		}), nil
+		return classEnvelope(errclass.Unsupported("executor.count_tokens has no CommandCode equivalent")), nil
 	case pluginabi.MethodExecutorHTTPRequest:
-		return classEnvelope(&errclass.Error{
-			Class:   errclass.ClassUnsupported,
-			Message: fmt.Sprintf("%s endpoint is not supported by commandcode", pluginabi.MethodExecutorHTTPRequest),
-		}), nil
+		return classEnvelope(errclass.Unsupported(fmt.Sprintf("%s endpoint is not supported by commandcode", pluginabi.MethodExecutorHTTPRequest))), nil
 	default:
 		return ErrEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -302,7 +297,12 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	defer m.lifeMu.Unlock()
 	m.mu.RLock()
 	configChanged := !reflect.DeepEqual(m.cfg, cfg)
+	baseChanged := strings.TrimRight(m.cfg.BaseURL, "/") != strings.TrimRight(cfg.BaseURL, "/")
+	quotaState := m.quotaCooldown
 	m.mu.RUnlock()
+	if baseChanged && quotaState != nil {
+		quotaState.reset()
+	}
 	// Older hosts resend identical plugin config after auth-file mutations.
 	// Only a real config change invalidates credentials not yet delivered.
 	if configChanged {
@@ -428,6 +428,12 @@ var shutdownDrainTimeout = 15 * time.Second
 func (m *Manager) handleShutdown() ([]byte, error) {
 	m.lifeMu.Lock()
 	defer m.lifeMu.Unlock()
+	m.mu.RLock()
+	quotaState := m.quotaCooldown
+	m.mu.RUnlock()
+	if quotaState != nil {
+		quotaState.close()
+	}
 	m.clearPendingLoginsLocked()
 	oldDone := m.closeStop()
 	if oldDone != nil {

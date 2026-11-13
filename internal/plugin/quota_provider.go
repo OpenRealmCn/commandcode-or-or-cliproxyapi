@@ -64,7 +64,7 @@ func (m *Manager) quotaFetch(ctx context.Context, req pluginapi.QuotaFetchReques
 		defaults, _ := config.Load(nil)
 		baseURL = defaults.BaseURL
 	}
-	usage, _, _, err := fetchQuota(ctx, m.bridge, baseURL, timeout, key)
+	usage, _, _, err := m.observedQuota(ctx, baseURL, timeout, key)
 	if err != nil {
 		return pluginapi.QuotaFetchResponse{}, err
 	}
