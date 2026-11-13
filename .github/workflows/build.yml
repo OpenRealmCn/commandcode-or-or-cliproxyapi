@@ -143,18 +143,25 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "ARCHIVE_NAME=${PLUGIN_ID}_${VERSION}_windows_arm64.zip" >> "${GITHUB_ENV}"
 
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+          use-cache: false
+
       - name: Build Windows ARM64 shared library
         timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
         env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: .
-          packages: .
-          targets: windows-arm64
-          out-dir: dist/windows-arm64
-          output: ${{ env.PLUGIN_ID }}.dll
-          flags: -ldflags=-s -w
+          GOOS: windows
+          GOARCH: arm64
+          CGO_ENABLED: 1
+          CC: zig cc -target aarch64-windows-gnu
+        run: |
+          set -euo pipefail
+          mkdir -p dist/windows-arm64
+          go build -trimpath -buildmode=c-shared \
+            -ldflags "-s -w" \
+            -o "dist/windows-arm64/${PLUGIN_ID}.dll" .
 
       - name: Package plugin
         run: |
@@ -214,20 +221,62 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y clang lld wget
+          sudo apt-get install -y clang lld
+
+      - name: Prepare FreeBSD sysroot
+        timeout-minutes: 20
+        env:
+          FREEBSD_ARCH: ${{ matrix.goarch }}
+          FREEBSD_RELEASE: 14.3-RELEASE
+        run: |
+          set -euo pipefail
+          toolchain_dir="$(mktemp -d "${RUNNER_TEMP}/freebsd-sysroot.XXXXXX")"
+          sysroot="${toolchain_dir}/root"
+          mkdir -p "${sysroot}"
+
+          # 旧 action 的 URL 缺少机器架构目录；已下线的发行版转向官方归档。
+          origins=(
+            "https://download.freebsd.org/releases/${FREEBSD_ARCH}/${FREEBSD_ARCH}/${FREEBSD_RELEASE}"
+            "https://archive.freebsd.org/old-releases/${FREEBSD_ARCH}/${FREEBSD_ARCH}/${FREEBSD_RELEASE}"
+          )
+          downloaded=false
+          for origin in "${origins[@]}"; do
+            if curl --fail --location --show-error --retry 3 --retry-delay 2 \
+                --connect-timeout 20 --max-time 60 \
+                "${origin}/MANIFEST" -o "${toolchain_dir}/MANIFEST" && \
+              curl --fail --location --show-error --retry 3 --retry-delay 2 \
+                --connect-timeout 20 --max-time 600 \
+                "${origin}/base.txz" -o "${toolchain_dir}/base.txz"; then
+              expected="$(awk '$1 == "base.txz" { print $2 }' "${toolchain_dir}/MANIFEST")"
+              if [[ "${expected}" =~ ^[0-9a-fA-F]{64}$ ]] && \
+                printf '%s  %s\n' "${expected}" "${toolchain_dir}/base.txz" | sha256sum --check -; then
+                downloaded=true
+                break
+              fi
+            fi
+          done
+          if [[ "${downloaded}" != true ]]; then
+            echo "::error::Unable to download and verify the FreeBSD sysroot"
+            exit 1
+          fi
+          tar --extract --xz --file "${toolchain_dir}/base.txz" \
+            --directory "${sysroot}" --no-same-owner --no-same-permissions
+          echo "FREEBSD_SYSROOT=${sysroot}" >> "${GITHUB_ENV}"
 
       - name: Build FreeBSD shared library
         timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
         env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: .
-          packages: .
-          targets: freebsd-${{ matrix.goarch }}
-          out-dir: dist/freebsd-${{ matrix.goarch }}
-          output: ${{ env.PLUGIN_ID }}.so
-          flags: -ldflags=-s -w
+          GOOS: freebsd
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CGO_LDFLAGS: -fuse-ld=lld
+        run: |
+          set -euo pipefail
+          export CC="clang --target=x86_64-unknown-freebsd14.3 --sysroot=${FREEBSD_SYSROOT}"
+          mkdir -p "dist/freebsd-${GOARCH}"
+          go build -trimpath -buildmode=c-shared \
+            -ldflags "-s -w" \
+            -o "dist/freebsd-${GOARCH}/${PLUGIN_ID}.so" .
 
       - name: Package plugin
         run: |
