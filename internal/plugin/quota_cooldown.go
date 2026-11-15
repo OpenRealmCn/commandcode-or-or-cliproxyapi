@@ -40,10 +40,11 @@ func (s quotaSnapshot) display() quotaUsage {
 
 type quotaFetchFunc func(context.Context, string, string, bool) (quotaSnapshot, error)
 type quotaCooldownFlight struct {
-	done     chan struct{}
-	started  time.Time
-	identity bool
-	cancel   context.CancelFunc
+	done       chan struct{}
+	started    time.Time
+	identity   bool
+	cancel     context.CancelFunc
+	generation uint64
 }
 type quotaCooldownEntry struct {
 	snapshot  quotaSnapshot
@@ -53,15 +54,18 @@ type quotaCooldownEntry struct {
 	flight    *quotaCooldownFlight
 	deadlines [3]time.Time
 	// 已到期窗口拒绝使用到期之前开始的旧查询重新开启下一轮。
-	notBefore [3]time.Time
-	lastUsed  time.Time
+	notBefore  [3]time.Time
+	lastUsed   time.Time
+	generation uint64
+	recovered  bool
 }
 type quotaCooldownManager struct {
-	mu      sync.Mutex
-	entries map[string]*quotaCooldownEntry
-	now     func() time.Time
-	fetch   quotaFetchFunc
-	closed  bool
+	mu              sync.Mutex
+	entries         map[string]*quotaCooldownEntry
+	now             func() time.Time
+	fetch           quotaFetchFunc
+	closed          bool
+	recoveryTickets map[string]quotaRecoveryTicket
 }
 
 func newQuotaCooldownManager(fetch quotaFetchFunc) *quotaCooldownManager {
@@ -94,6 +98,14 @@ func (q *quotaCooldownManager) expireLocked(e *quotaCooldownEntry, now time.Time
 }
 func (q *quotaCooldownManager) observeLocked(e *quotaCooldownEntry, s quotaSnapshot, started, anchor, now time.Time) {
 	windows := [3]*quotaWindow{s.usage.Month, &s.usage.Weekly, &s.usage.FiveHour}
+	// 只有明确健康的原始窗口才可撤销对应计时器；缺失数据不是恢复证据。
+	for i, w := range windows {
+		if s.usage.recoveryVerified && !started.Before(e.notBefore[i]) && quotaWindowHealthy(w) && !e.deadlines[i].IsZero() {
+			e.deadlines[i] = time.Time{}
+			e.notBefore[i] = started
+			e.recovered = true
+		}
+	}
 	selected := -1
 	var deadline time.Time
 	// 按月、周、5-hour 选择唯一阻塞窗口；长窗口有效期间不启动短窗口计时器。
@@ -224,7 +236,7 @@ func (q *quotaCooldownManager) load(ctx context.Context, base, key string, ident
 			return s, err
 		}
 		queryCtx, cancel := context.WithCancel(ctx)
-		f := &quotaCooldownFlight{done: make(chan struct{}), started: now, identity: identity, cancel: cancel}
+		f := &quotaCooldownFlight{done: make(chan struct{}), started: now, identity: identity, cancel: cancel, generation: e.generation}
 		e.flight = f
 		q.mu.Unlock()
 		s, err := q.fetch(queryCtx, base, key, identity)
@@ -239,7 +251,7 @@ func (q *quotaCooldownManager) load(ctx context.Context, base, key string, ident
 		}
 		q.expireLocked(e, now)
 		// 同时到达的失败可共用新鲜结果；旧查询不能跨过已到期窗口的代际边界。
-		stale := false
+		stale := f.generation != e.generation
 		for _, b := range e.notBefore {
 			stale = stale || f.started.Before(b)
 		}
@@ -279,6 +291,7 @@ func (q *quotaCooldownManager) clearLocked() {
 		}
 	}
 	q.entries = make(map[string]*quotaCooldownEntry)
+	q.recoveryTickets = nil
 }
 func (q *quotaCooldownManager) close() {
 	q.mu.Lock()
@@ -304,14 +317,19 @@ func (m *Manager) observedQuota(ctx context.Context, base string, timeout time.D
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	s, err := m.quotaState().load(ctx, base, key, true, true, time.Time{}, time.Time{})
-	return s.display(), s.label, s.email, err
+	q := m.quotaState()
+	s, err := q.load(ctx, base, key, true, true, time.Time{}, time.Time{})
+	u := s.display()
+	q.mu.Lock()
+	if e := q.entries[quotaStateKey(base, key)]; err == nil && e != nil && e.recovered && quotaSnapshotHealthy(s) {
+		u.RecoveryNotice = "插件本地旧冷却已撤销；CPA 若仍显示冷却，请在 CommandCode 页面核对后恢复账号冷却。"
+	}
+	q.mu.Unlock()
+	return u, s.label, s.email, err
 }
 func (m *Manager) preflightQuota(ctx context.Context, res *resolvedExecution) *errclass.Error {
 	q := m.quotaState()
-	if e := q.cooldown(res.cfg.BaseURL, res.key); e != nil {
-		return e
-	}
+	// 活动冷却也按 TTL 重查，允许明确健康结果提前恢复。
 	ctx, cancel := context.WithTimeout(ctx, quotaExecutionTimeout)
 	defer cancel()
 	_, _ = q.load(ctx, res.cfg.BaseURL, res.key, false, false, time.Time{}, time.Time{})
@@ -322,7 +340,12 @@ func (m *Manager) quotaFailure(ctx context.Context, res *resolvedExecution, orig
 		return original
 	}
 	q := m.quotaState()
+	q.mu.Lock()
 	failed := q.now()
+	e := q.entryLocked(quotaStateKey(res.cfg.BaseURL, res.key), failed)
+	e.generation++ // 旧健康查询不能覆盖新发生的额度拒绝。
+	e.cached = false
+	q.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, quotaExecutionTimeout)
 	defer cancel()
 	_, _ = q.load(ctx, res.cfg.BaseURL, res.key, false, true, failed, failed)
@@ -330,4 +353,15 @@ func (m *Manager) quotaFailure(ctx context.Context, res *resolvedExecution, orig
 		return e
 	}
 	return original
+}
+
+// 健康与“不触发耗尽”不同；未知数据保留已有阻塞。
+func quotaWindowHealthy(w *quotaWindow) bool {
+	if w == nil || w.unknown || math.IsNaN(w.Used) || math.IsInf(w.Used, 0) || math.IsNaN(w.Cap) || math.IsInf(w.Cap, 0) || w.Used < 0 || w.Cap < 0 || w.Status == "exceeded" {
+		return false
+	}
+	return w.Status == "unlimited" || (w.Status == "ok" && (w.Cap == 0 || !displayedQuotaExhausted(*w)))
+}
+func quotaSnapshotHealthy(s quotaSnapshot) bool {
+	return s.usage.recoveryVerified && quotaWindowHealthy(s.usage.Month) && quotaWindowHealthy(&s.usage.Weekly) && quotaWindowHealthy(&s.usage.FiveHour)
 }

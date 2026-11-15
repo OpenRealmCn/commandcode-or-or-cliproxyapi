@@ -574,3 +574,29 @@ func (b *HostBridge) Log(level, message string, fields map[string]any) error {
 		hostLogReq{Level: level, Message: message, Fields: fields}, "host log")
 	return err
 }
+
+// AuthRuntime 只读取运行时摘要，不宣称包含全部模型限制。
+func (b *HostBridge) AuthRuntime(ctx context.Context, index string) (pluginapi.HostAuthFileEntry, error) {
+	env, err := b.invoke(ctx, pluginabi.MethodHostAuthGetRuntime, pluginapi.HostAuthGetRequest{AuthIndex: index}, "host auth runtime")
+	if err != nil {
+		return pluginapi.HostAuthFileEntry{}, err
+	}
+	var out pluginapi.HostAuthGetRuntimeResponse
+	if json.Unmarshal(env.Result, &out) != nil || out.Auth.AuthIndex != index {
+		return pluginapi.HostAuthFileEntry{}, fmt.Errorf("invalid host runtime response")
+	}
+	return out.Auth, nil
+}
+
+// ResetCooldown 是管理员确认的账号级全量操作；超时表示结果未知，不能自动重试。
+func (b *HostBridge) ResetCooldown(ctx context.Context, index string) error {
+	env, err := b.invoke(ctx, pluginabi.MethodHostRoutingResetCooldown, pluginapi.HostRoutingResetCooldownRequest{AuthIndex: index}, "host cooldown reset")
+	if err != nil {
+		return err
+	}
+	var out pluginapi.HostRoutingResetCooldownResponse
+	if json.Unmarshal(env.Result, &out) != nil || out.AuthIndex != index {
+		return fmt.Errorf("invalid host reset response")
+	}
+	return nil
+}

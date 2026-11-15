@@ -194,6 +194,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   const marker = "/v0/resource/plugins/commandcode-or-or-cliproxyapi/quota";
   const prefix = location.pathname.endsWith(marker) ? location.pathname.slice(0, -marker.length) : "";
   const quotaEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/quota-usage";
+  const recoveryEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/cooldown-recovery";
+  const recoveryBusy = new Set();
+  const recoveryMessages = new Map();
   const accountsEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/accounts";
   const storageKey = "commandcode-or-or-cliproxyapi:quota";
   const values = new Map();
@@ -265,6 +268,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
       render();
     });
   }
+  async function recoverCooldown(card) {
+    const key = card.key_id;
+    if (recoveryBusy.has(key) || inFlight.has(key)) return;
+    recoveryBusy.add(key);
+    recoveryMessages.set(key, "正在核对新鲜额度和账号身份…"); render();
+    try {
+      const preview = await request(recoveryEndpoint, {key_id: key, auth_id: card.auth_id});
+      const live = currentCard(key);
+      if (!live || live.auth_id !== card.auth_id || live.disabled) throw new Error("账号状态已改变，请刷新列表。");
+      if (preview.usage) applyUsage(key, preview.usage, live.label);
+      if (!preview.token || !window.confirm((live.label || live.file_name) + "\n\n" + preview.warning)) {
+        recoveryMessages.set(key, "已取消，未重置 CPA 冷却。"); return;
+      }
+      recoveryMessages.set(key, "正在恢复宿主冷却…"); render();
+      const result = await request(recoveryEndpoint, {key_id: key, auth_id: card.auth_id, token: preview.token, confirm: true});
+      recoveryMessages.set(key, result.message || "宿主已确认操作，请刷新管理中心核对。");
+    } catch (err) { recoveryMessages.set(key, err.message || "结果未知，请刷新宿主状态核对。"); }
+    finally { recoveryBusy.delete(key); render(); }
+  }
   function auth() {
     try {
       const raw = localStorage.getItem("cli-proxy-auth");
@@ -299,7 +321,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
         const error = new Error(response.status === 412 ? "配置已被其他操作修改，请刷新并重新确认。" :
           response.status === 401 || response.status === 403 ? "管理登录已失效或权限不足。" : "管理请求失败（HTTP " + response.status + "）。");
         error.status = response.status;
-        if (url === accountsEndpoint || url === quotaEndpoint) error.message = typeof data.error === "string" ? data.error : error.message;
+        if (url === accountsEndpoint || url === quotaEndpoint || url === recoveryEndpoint) error.message = typeof data.error === "string" ? data.error : error.message;
         throw error;
       }
       return {data, etag: response.headers.get("ETag")};
@@ -710,10 +732,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
       const updated = fetchedAt.get(card.key_id);
       if (updated) { const timestamp = document.createElement("div"); timestamp.className = "quota-meta"; timestamp.textContent = "Updated " + new Date(updated).toLocaleString(); section.appendChild(timestamp); }
       const actions = document.createElement("div"); actions.className = "quota-actions";
-      const button = document.createElement("button"); button.className = "quota-refresh"; button.textContent = inFlight.has(card.key_id) ? "Refreshing..." : "Refresh"; button.disabled = inFlight.has(card.key_id); button.setAttribute("aria-label", "Refresh " + card.label);
+      const button = document.createElement("button"); button.className = "quota-refresh"; button.textContent = inFlight.has(card.key_id) ? "Refreshing..." : "Refresh"; button.disabled = inFlight.has(card.key_id) || recoveryBusy.has(card.key_id); button.setAttribute("aria-label", "Refresh " + card.label);
       const error = document.createElement("span"); error.className = "quota-error"; error.setAttribute("role", "status"); error.textContent = errors.get(card.key_id) || "";
       button.onclick = () => { refreshCard(card); };
-      actions.append(button, error); section.appendChild(actions); grid.appendChild(section);
+      actions.append(button);
+      if (card.auth_id) {
+        const recover = document.createElement("button"); recover.type = "button"; recover.className = "quota-refresh";
+        recover.textContent = recoveryBusy.has(card.key_id) ? "正在核对恢复…" : "核对并恢复冷却";
+        recover.setAttribute("aria-label", "核对并恢复冷却 " + card.label);
+        recover.disabled = card.disabled || inFlight.has(card.key_id) || recoveryBusy.has(card.key_id);
+        recover.onclick = () => recoverCooldown(card); actions.append(recover);
+      }
+      actions.append(error); section.appendChild(actions);
+      const noticeText = recoveryMessages.get(card.key_id) || (cached && cached.recovery_notice);
+      if (noticeText) { const notice = document.createElement("div"); notice.className = "quota-meta"; notice.setAttribute("role", "status"); notice.textContent = noticeText; section.appendChild(notice); }
+      grid.appendChild(section);
     });
     app.appendChild(grid);
   }

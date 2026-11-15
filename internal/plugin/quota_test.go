@@ -22,7 +22,7 @@ func TestManagementRegistration(t *testing.T) {
 		Resources []struct{ Path, Menu, Description string } `json:"resources"`
 	}
 	decodeResult(t, mustHandle(t, m, pluginabi.MethodManagementRegister, []byte(`{}`)), &got)
-	if len(got.Routes) != 6 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" || got.Routes[1].Path != "/plugins/"+pluginName+"/accounts" {
+	if len(got.Routes) != 7 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" || got.Routes[1].Path != "/plugins/"+pluginName+"/accounts" {
 		t.Fatalf("routes = %+v", got.Routes)
 	}
 	if len(got.Resources) != 2 || got.Resources[0].Path != "/quota" || got.Resources[0].Menu != "CommandCode" || got.Resources[1].Path != "/oauth" {
@@ -589,8 +589,8 @@ func TestQuotaPageUsesNativeQuotaStylesAndThemeBridge(t *testing.T) {
 	if five < 0 || weekly < five || month < weekly {
 		t.Fatalf("quota rows out of order: five=%d weekly=%d month=%d", five, weekly, month)
 	}
-	if strings.Count(resources.QuotaPage, `document.createElement("button")`) != 1 || strings.Contains(resources.QuotaPage, `textContent = "Refresh card"`) || strings.Contains(resources.QuotaPage, "quota-button") || strings.Contains(resources.QuotaPage, "quota-refresh-small") {
-		t.Fatal("quota page does not have exactly one secondary refresh button path")
+	if strings.Count(resources.QuotaPage, `document.createElement("button")`) != 2 || strings.Contains(resources.QuotaPage, `textContent = "Refresh card"`) || strings.Contains(resources.QuotaPage, "quota-button") || strings.Contains(resources.QuotaPage, "quota-refresh-small") {
+		t.Fatal("quota page must have refresh and explicit recovery button paths")
 	}
 	for _, marker := range []string{"querySelectorAll('head link[rel=\"stylesheet\"], head style')", "cloneNode(true)", "dataset.cpaStyle"} {
 		if strings.Contains(resources.QuotaPage, marker) {

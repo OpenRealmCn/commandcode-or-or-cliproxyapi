@@ -25,7 +25,7 @@ const ProviderID = "commandcode"
 // pluginName / pluginVersion are reported in registration metadata.
 const (
 	pluginName    = "commandcode-or-or-cliproxyapi"
-	pluginVersion = "0.2.5"
+	pluginVersion = "0.2.6"
 )
 
 // githubRepoURL satisfies the host's validPlugin gate (host.go
@@ -252,6 +252,7 @@ func (m *Manager) registerManagement(request []byte) ([]byte, error) {
 			Path   string `json:"path"`
 		}{{Method: "POST", Path: "/plugins/" + pluginName + "/quota-usage"},
 			{Method: "POST", Path: "/plugins/" + pluginName + "/accounts"},
+			{Method: "POST", Path: "/plugins/" + pluginName + "/cooldown-recovery"},
 			{Method: "POST", Path: "/plugins/" + pluginName + "/oauth/complete"},
 			{Method: "POST", Path: "/plugins/" + pluginName + "/oauth/session"},
 			{Method: "POST", Path: "/plugins/" + pluginName + "/oauth/cancel"},

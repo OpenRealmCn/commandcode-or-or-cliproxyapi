@@ -2,6 +2,24 @@
 
 User-facing change summary: [ChangeLog](CHANGELOG.md). Supported plans: **CommandCode GOAT / Pro / Max**, not CommandCode Go.
 
+## v0.2.6 — Recovering stale quota cooldowns (2026-11-15)
+
+**中文**
+
+- 新鲜、完整且有效的原始额度和订阅数据证明某窗口恢复后，清除该窗口对应的插件本地旧计时器；不确定或缺失数据不解锁。其他仍耗尽窗口继续按月→周→5-hour 阻塞。过期冷却执行预检会重查，旧并发健康响应不能覆盖新额度失败。
+- 插件额度页面新增单账号「核对并恢复冷却」。服务端刷新额度并重新核对 CommandCode provider、auth index、稳定 ID、文件名、key、订阅/额度和运行时状态；只有管理员确认后才调用宿主恢复接口。普通刷新不重置 CPA 状态。
+- CPA v8 现有恢复回调会重置账号及所有模型冷却，没有 reason 条件和 CAS。确认文案说明宽范围与并发竞态；两分钟一次性票据，消耗后不重试。超时标记为结果未知并尝试独立读取运行时状态；不修改认证文件或将禁用账号启用。
+- 缺少/错误宿主回调、额度仍耗尽、数据不完整、身份变化、过期/重放票据均不会执行恢复。该动作不会重置 CommandCode 上游真实额度。
+- 验证：`go test ./...`、`go vet ./...`、Windows amd64 C-shared DLL；隔离 CPA 8.0.69 本地 mock 回归，验证额度恢复→手动确认→模型请求重新成功；浏览器取消/确认、无管理鉴权拒绝及移动布局；既有 accounts/proxy 页面测试。
+
+**English**
+
+- Clear a plugin-local window timer only when fresh, complete and valid raw quota plus subscription data proves recovery. Unknown/missing evidence cannot unlock; other exhausted windows still block monthly → weekly → five-hour. Preflight rechecks during local cooldown, and generation checks reject older healthy responses racing with a new quota failure.
+- Add a per-account **核对并恢复冷却** action to the quota page. The server refreshes quota and revalidates provider, auth index, stable ID, filename, key, subscription/quota and host runtime. CPA is called only after explicit admin confirmation; ordinary refresh leaves host cooldown untouched.
+- CPA v8's existing reset callback clears cooldown across the account and all models, with no reason condition or CAS. The dialog discloses the broad scope and race. Tickets expire in two minutes, are single-use, and are not retried. Timeout reports an unknown outcome and attempts a separate runtime read. Auth files are unchanged and disabled accounts stay disabled.
+- Unsupported/failing host callbacks, exhausted quota, incomplete evidence, changed identity and expired/replayed tickets do not reset routing. The action does not reset CommandCode's actual upstream quota.
+- Validation: `go test ./...`, `go vet ./...`, Windows amd64 C-shared build; isolated CPA 8.0.69 local-mock test verifies recovered quota → explicit confirmation → successful model routing; browser tests cover cancel/confirm, unauthenticated rejection and mobile layout, alongside existing accounts/proxy tests.
+
 ## v0.2.5 — Request error scope and quota cooldown (2026-11-14)
 
 **中文**

@@ -17,7 +17,7 @@ import (
 )
 
 func testSnapshot(month *quotaWindow, weekly, five quotaWindow) quotaSnapshot {
-	return quotaSnapshot{usage: quotaUsage{Month: month, Weekly: weekly, FiveHour: five}}
+	return quotaSnapshot{usage: quotaUsage{Month: month, Weekly: weekly, FiveHour: five, recoveryVerified: true}}
 }
 func healthyQuotaSnapshot() quotaSnapshot {
 	return testSnapshot(&quotaWindow{Status: "ok", Cap: 70, Used: 1}, quotaWindow{Status: "ok", Cap: 35, Used: 1}, quotaWindow{Status: "ok", Cap: 14, Used: 1})
@@ -74,14 +74,16 @@ func TestQuotaCooldownPriorityAndDeadlinesDoNotSlide(t *testing.T) {
 	assertCooldown(t, q.cooldown("base", "key"), 18000, "5-hour")
 	display := raw.display()
 	if raw.usage.FiveHour.Status == "exceeded" || display.Month == raw.usage.Month {
-		t.Fatal("display shares mutable source snapshot")
+		t.Fatal("display fold mutated or failed to copy source snapshot")
 	}
 	clock.Add(int64(time.Hour))
 	loadQuotaTest(t, q)
 	assertCooldown(t, q.cooldown("base", "key"), 14400, "5-hour")
 	s = healthyQuotaSnapshot()
 	loadQuotaTest(t, q)
-	assertCooldown(t, q.cooldown("base", "key"), 14400, "5-hour")
+	if q.cooldown("base", "key") != nil {
+		t.Fatal("healthy quota did not clear old cooldown")
+	}
 	s.usage.Weekly.Used = 35
 	loadQuotaTest(t, q)
 	assertCooldown(t, q.cooldown("base", "key"), 604800, "weekly")

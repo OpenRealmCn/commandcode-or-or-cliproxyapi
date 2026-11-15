@@ -211,6 +211,14 @@ Healthy results cache for 60 seconds and retrieval failures for 10 seconds. Exec
 
 Unsupported tools such as `namespace`, invalid input and local translation errors return non-retryable HTTP 400 `request_scoped`, stopping rotation without cooling credentials. This does not implement namespace tools. Authentication/account restrictions and genuine upstream quota/rate limits keep their original scope. Empty user messages/text blocks are removed without deleting tool results or images; malformed upstream responses are not blamed on the client.
 
+### Recovering stale quota cooldowns (v0.2.6)
+
+Fresh, valid quota and subscription evidence can now cancel the plugin's timer for a recovered raw window. Other exhausted windows still block in monthly → weekly → five-hour order; repeated exhausted reads do not extend a deadline. Partial/failed responses, unknown plans and invalid subscriptions cannot prove recovery. Query generations reject healthy results started before a newer quota failure. Execution preflight rechecks on TTL even during a local cooldown. CPA usually stops invoking the executor during its own cooldown, so this does not provide periodic automatic recovery; manually refresh quota instead.
+
+For **existing CPA cooldowns**, open Management Center → CommandCode → the account's **核对并恢复冷却** button. The plugin checks fresh monthly/weekly/five-hour quota, an active unexpired subscription, stable auth ID, key and runtime status. Only after explicit confirmation and revalidation does it call `host.routing.reset_cooldown`. A normal quota refresh or a cancelled preview never resets CPA. Standard quota cards can show a recovery notice pointing to this action.
+
+The current host resets the account and **all model cooldowns**, with no conditional atomic check. Restrictions arriving after the checks can also be cleared. This is an explicitly confirmed admin operation, not a guarantee of selective/concurrent recovery. It neither changes auth files nor enables disabled accounts nor replenishes upstream quota. Confirmation tickets are single-use and expire in two minutes. Timeout means the result may be unknown: inspect host state before retrying; no automatic retry occurs. Missing host callbacks yield an error rather than a false success. Real CPA 8.0.69, local mocks and browser tests verify actual routing recovery.
+
 ### Account proxy pool
 
 Open **CommandCode accounts and quota → Proxy pool and account egress**. This feature requires the host's v8 configuration API with ETag support and its auth-file field PATCH API; it has been integration-tested with CPA 8.0.69. Older hosts can keep using account and quota features, but proxy-pool management is disabled when the required APIs are unavailable.

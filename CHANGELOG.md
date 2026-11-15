@@ -2,6 +2,22 @@
 
 本文件记录面向使用者的更新摘要。详细版本历史见 [RELEASE_NOTES.md](RELEASE_NOTES.md)，操作步骤见 [中文说明](README.zh-CN.md) / [English README](README.md)。
 
+## v0.2.6 — 2026-11-15
+
+- 新鲜、完整且有效的额度及订阅快照确认对应窗口恢复后，立即撤销插件本地旧冷却；仍耗尽的其他窗口继续按月 → 周 → 5-hour 优先级阻塞。缺失字段、查询失败、未知套餐及无效订阅不会被误当作恢复。
+- 执行预检在本地冷却期间也按缓存期限重新检查额度；查询代际保护避免旧健康结果覆盖新的额度拒绝。
+- 新增单账号「核对并恢复冷却」管理操作。重新读取额度和稳定账号身份后，由管理员明确确认才调用 CPA 宿主恢复回调；普通额度刷新不清除宿主冷却。
+- 明确披露宿主接口会清除此账号及所有模型冷却，且没有 CAS；确认票据两分钟过期、只能使用一次。超时显示结果未知，不自动重试；不修改认证文件、不启用已禁用账号。
+- 通过本地 mock、CPA 8.0.69 原生路由与浏览器取消/确认/窄屏测试。
+
+### v0.2.6 English highlights — 2026-11-15
+
+- Clear a plugin-local window timer early only after a fresh, complete and valid quota/subscription snapshot proves that window recovered; other exhausted windows keep blocking in monthly → weekly → five-hour order. Missing fields, query failures, unknown plans and invalid subscriptions are not recovery evidence.
+- Recheck quota on execution-preflight TTL during local cooldown. Generation checks prevent an older healthy query from overwriting a newer quota refusal.
+- Add a per-account **核对并恢复冷却** management action. It rechecks quota and stable account identity; only explicit admin confirmation invokes the CPA recovery callback. Ordinary quota refresh does not clear host cooldown.
+- Disclose that the host callback clears this account's cooldowns across all models and has no CAS. Confirmation tickets expire after two minutes and are single-use. Timeout is an unknown result and is never retried automatically. Auth files are not edited and disabled accounts are not enabled.
+- Validate using local mocks, CPA 8.0.69 native routing, and browser cancel/confirm/mobile checks.
+
 ## v0.2.5 — 2026-11-14
 
 - 修复空 `user` 消息及空文本块导致的 `user message must have content`，覆盖三个协议入口；保留工具结果、图片、有效文本和未知内容块。

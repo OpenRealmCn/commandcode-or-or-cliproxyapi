@@ -149,6 +149,9 @@ func quotaResponseFromUsage(usage quotaUsage) pluginapi.QuotaFetchResponse {
 			Format: "number",
 		})
 	}
+	if usage.RecoveryNotice != "" {
+		resp.Summary = append(resp.Summary, pluginapi.QuotaMetric{Key: "cooldown_recovery", Label: usage.RecoveryNotice, Value: 1, Format: "number"})
+	}
 	return resp
 }
 
