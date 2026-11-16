@@ -53,6 +53,7 @@ type quotaCooldownEntry struct {
 	fetched   time.Time
 	flight    *quotaCooldownFlight
 	deadlines [3]time.Time
+	sources   [3]string
 	// 已到期窗口拒绝使用到期之前开始的旧查询重新开启下一轮。
 	notBefore  [3]time.Time
 	lastUsed   time.Time
@@ -92,6 +93,7 @@ func (q *quotaCooldownManager) expireLocked(e *quotaCooldownEntry, now time.Time
 		if !deadline.IsZero() && !deadline.After(now) {
 			e.notBefore[i] = deadline
 			e.deadlines[i] = time.Time{}
+			e.sources[i] = ""
 			e.cached = false // 不让同一份耗尽快照在期限到点后启动整个新周期。
 		}
 	}
@@ -102,25 +104,20 @@ func (q *quotaCooldownManager) observeLocked(e *quotaCooldownEntry, s quotaSnaps
 	for i, w := range windows {
 		if s.usage.recoveryVerified && !started.Before(e.notBefore[i]) && quotaWindowHealthy(w) && !e.deadlines[i].IsZero() {
 			e.deadlines[i] = time.Time{}
+			e.sources[i] = ""
 			e.notBefore[i] = started
 			e.recovered = true
 		}
 	}
 	selected := -1
 	var deadline time.Time
+	var source string
 	// 按月、周、5-hour 选择唯一阻塞窗口；长窗口有效期间不启动短窗口计时器。
 	for i, w := range windows {
-		if w == nil || !displayedQuotaExhausted(*w) || started.Before(e.notBefore[i]) {
+		if w == nil || w.unknown || !displayedQuotaExhausted(*w) || started.Before(e.notBefore[i]) {
 			continue
 		}
-		switch i {
-		case 0:
-			deadline, _ = time.Parse(time.RFC3339, periodEndRFC3339(w.ResetsAt))
-		case 1:
-			deadline = anchor.Add(7 * 24 * time.Hour)
-		case 2:
-			deadline = anchor.Add(5 * time.Hour)
-		}
+		deadline, source = quotaDeadline(i, w.ResetsAt, anchor, now)
 		if deadline.After(now) {
 			selected = i
 			break
@@ -146,9 +143,51 @@ func (q *quotaCooldownManager) observeLocked(e *quotaCooldownEntry, s quotaSnaps
 	}
 	for i := selected + 1; i < len(e.deadlines); i++ {
 		e.deadlines[i] = time.Time{}
+		e.sources[i] = ""
 	}
 	e.deadlines[selected] = deadline
+	e.sources[selected] = source
 }
+
+// quotaDeadline 优先使用上游未来时间；只有滚动窗口允许固定期限回退。
+func quotaDeadline(window int, reset string, anchor, now time.Time) (time.Time, string) {
+	if end, err := time.Parse(time.RFC3339, periodEndRFC3339(reset)); err == nil && end.After(now) {
+		if window == 0 {
+			return end, "subscription_end"
+		}
+		return end, "upstream_reset"
+	}
+	if window == 1 {
+		return anchor.Add(7 * 24 * time.Hour), "observation_fallback"
+	}
+	if window == 2 {
+		return anchor.Add(5 * time.Hour), "observation_fallback"
+	}
+	return time.Time{}, ""
+}
+
+type quotaCooldownDiagnostic struct {
+	Active bool   `json:"active"`
+	Window string `json:"window,omitempty"`
+	Until  string `json:"until,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+// diagnostic 只读取现有状态，不创建条目或修改缓存。
+func (q *quotaCooldownManager) diagnostic(base, key string) quotaCooldownDiagnostic {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	e := q.entries[quotaStateKey(base, key)]
+	if e != nil {
+		for i, d := range e.deadlines {
+			if d.After(q.now()) {
+				return quotaCooldownDiagnostic{true, [3]string{"monthly", "weekly", "5-hour"}[i], d.UTC().Format(time.RFC3339), e.sources[i]}
+			}
+		}
+	}
+	return quotaCooldownDiagnostic{}
+}
+
 func (q *quotaCooldownManager) entryLocked(key string, now time.Time) *quotaCooldownEntry {
 	e := q.entries[key]
 	if e == nil {
@@ -320,6 +359,7 @@ func (m *Manager) observedQuota(ctx context.Context, base string, timeout time.D
 	q := m.quotaState()
 	s, err := q.load(ctx, base, key, true, true, time.Time{}, time.Time{})
 	u := s.display()
+	u.LocalCooldown = q.diagnostic(base, key)
 	q.mu.Lock()
 	if e := q.entries[quotaStateKey(base, key)]; err == nil && e != nil && e.recovered && quotaSnapshotHealthy(s) {
 		u.RecoveryNotice = "插件本地旧冷却已撤销；CPA 若仍显示冷却，请在 CommandCode 页面核对后恢复账号冷却。"

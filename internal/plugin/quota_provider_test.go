@@ -38,7 +38,7 @@ func quotaProviderResponder(t *testing.T, base string) func(string, []byte) ([]b
 					`"weekly":{"used":18.5,"cap":35,"exceeded":false,"resetAt":1790136440498}}}`)}), nil
 		case base + "/alpha/billing/subscriptions":
 			return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(
-				`{"success":true,"data":{"planId":"individual-goat","status":"active","currentPeriodEnd":"2026-10-16T04:03:37.000Z"}}`)}), nil
+				`{"success":true,"data":{"planId":"individual-goat","status":"active","currentPeriodEnd":"2099-10-16T04:03:37.000Z"}}`)}), nil
 		case base + "/alpha/whoami?limits=1":
 			return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(
 				`{"success":true,"user":{"email":"dev@example.test"},"org":null}`)}), nil
@@ -172,6 +172,32 @@ func TestQuotaBucketStatePrecedence(t *testing.T) {
 	}
 	if !strings.Contains(exceeded.Description, "Weekly window") {
 		t.Errorf("description = %q, want the human label", exceeded.Description)
+	}
+}
+
+func TestQuotaResponseOmitsUnknownBucketsAndKeepsPolicyDiagnostic(t *testing.T) {
+	usage := quotaUsage{
+		Weekly:        quotaWindow{Status: "ok", Used: 2, Cap: 10},
+		FiveHour:      quotaWindow{Status: "unlimited", unknown: true},
+		LocalCooldown: quotaCooldownDiagnostic{Active: true, Window: "weekly", Until: "2099-01-01T00:00:00Z", Source: "upstream_reset"},
+	}
+	got := quotaResponseFromUsage(usage)
+	if len(got.Groups) != 1 || len(got.Groups[0].Buckets) != 1 {
+		t.Fatalf("unknown balance became numeric bucket: %+v", got.Groups)
+	}
+	group := got.Groups[0]
+	if group.Buckets[0].Window != "weekly" || group.Buckets[0].RemainingFraction != 0.8 {
+		t.Fatalf("known balance changed: %+v", group.Buckets)
+	}
+	for _, label := range []string{"Monthly 数据未知", "5-hour 数据未知", "插件策略截止 weekly 2099-01-01T00:00:00Z", "upstream_reset", "宿主冷却请另行核对"} {
+		if !strings.Contains(group.DisplayName, label) {
+			t.Fatalf("missing %q in %q", label, group.DisplayName)
+		}
+	}
+	usage.Weekly.unknown = true
+	got = quotaResponseFromUsage(usage)
+	if len(got.Groups[0].Buckets) != 0 || !strings.Contains(got.Groups[0].DisplayName, "Weekly 数据未知") {
+		t.Fatalf("all-unknown response fabricated quota: %+v", got)
 	}
 }
 

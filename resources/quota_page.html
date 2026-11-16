@@ -70,8 +70,9 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
 .quota-fill { height: 100%; border-radius: inherit; background: var(--success-color); transition: width .2s ease; }
 .quota-fill.is-exceeded { background: var(--error-color); }
 .quota-meta.is-exceeded { color: var(--error-color); }
-.quota-meta { color: var(--text-secondary); font-size: 12px; }
-.quota-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.quota-meta { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+fieldset .quota-input { display: block; width: 100%; margin: 8px 0; }
+.quota-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
 .quota-refresh { border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); background: var(--bg-tertiary); font: inherit; font-size: 12px; cursor: pointer; }
 .quota-refresh:hover { border-color: var(--primary-color); background: var(--bg-primary); }
 .quota-refresh:disabled { cursor: not-allowed; opacity: .6; }
@@ -122,6 +123,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   </form>
   <p id="save-status" class="quota-status" role="status"></p>
   <div class="quota-toolbar"><button id="reload-accounts" class="quota-refresh" type="button">刷新账户列表</button></div>
+  <section class="proxy-panel" aria-label="账号非扣费可用性">
+    <div class="proxy-tools"><button id="availability-check" class="quota-refresh" type="button">检测全部账号可用性</button><button id="availability-cancel" class="quota-refresh" type="button" disabled>停止排队</button></div>
+    <p id="availability-status" role="status" aria-atomic="true">尚未检测。</p>
+    <p class="quota-muted">仅读取订阅、额度和宿主状态，不调用收费模型、不重置冷却。可用仅代表非扣费证据通过；不保证真实模型请求或账号代理出口可用。停止后不再派发，已发出的只读检测仍可能完成。</p>
+  </section>
   <p id="list-status" class="quota-status" role="status"></p>
   <p id="legacy-status" class="quota-status quota-warning" role="status"></p>
   <details id="proxy-panel" class="proxy-panel">
@@ -140,6 +146,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
       <button id="proxy-import" class="quota-refresh" type="button" disabled>导入有效项</button>
     </div>
     <p id="proxy-preview-status" role="status"></p><ul id="proxy-preview" class="proxy-preview"></ul>
+    <fieldset class="proxy-panel"><legend>代理出口检测（仅本页，默认关闭）</legend>
+      <p class="quota-warning">只配置你信任的 HTTPS 服务。检测会向服务发送代理出口 IP 和访问时间，不发送账号或管理凭据。宿主可能跟随跳转或在部分配置错误时回退直连，成功仅代表本次探测成功，不证明模型可用或严格代理隔离。浏览器超时不代表宿主请求已取消。</p>
+      <label for="probe-echo">出口回显端点，响应 {"ip":"…"}</label><input id="probe-echo" class="quota-input" type="url" autocomplete="off" placeholder="https://your-trusted-endpoint.example/ip">
+      <label for="probe-type">可选类型端点（追加 ?ip=，响应 {ip,type,asn,organization,source}）</label><input id="probe-type" class="quota-input" type="url" autocomplete="off">
+      <div class="proxy-tools"><label for="probe-interval">间隔（分钟）</label><input id="probe-interval" class="quota-input" type="number" min="1" max="1440" value="5"><label><input id="probe-enabled" type="checkbox">开页定时检测</label><button id="probe-all" class="quota-refresh" type="button">检测全部代理</button><button id="probe-stop" class="quota-refresh" type="button" disabled>停止排队</button></div>
+      <p id="probe-status" role="status" aria-atomic="true">未启动；设置和检测结果仅在本页内存中，关闭或隐藏页面停止调度。</p>
+    </fieldset>
     <label for="proxy-search">查找代理 ID、标签或主机</label><input id="proxy-search" type="search" class="quota-input" autocomplete="off">
     <ul id="proxy-items" class="proxy-items"></ul>
   </details>
@@ -150,6 +163,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
       <select id="proxy-batch-id" class="quota-input" aria-label="批量选择代理"><option value="">解绑，继承宿主默认设置</option></select>
       <button id="proxy-batch-preview" class="quota-refresh" type="button" disabled>预览批量设置</button>
       <button id="proxy-random" class="quota-refresh" type="button" disabled>随机分配未绑定账号</button>
+      <button id="proxy-balance" class="quota-refresh" type="button" disabled>全部账号随机均分到可用代理</button>
+      <label><input id="balance-disabled" type="checkbox">包含禁用账号（不启用）</label>
+      <label><input id="balance-external" type="checkbox">允许覆盖外部／未知绑定</label>
     </div>
     <p class="quota-muted">随机默认仅处理未绑定且无外部代理设置的账号。先预览、再确认；已绑定账号不会被随机覆盖，多个账号可以共用同一代理。</p>
     <div id="proxy-plan" hidden><p id="proxy-plan-summary"></p><ul id="proxy-plan-list" class="proxy-preview"></ul><button id="proxy-plan-apply" class="quota-refresh" type="button">确认保存分配</button> <button id="proxy-plan-cancel" class="quota-refresh" type="button">取消预览</button></div>
@@ -195,15 +211,22 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   const prefix = location.pathname.endsWith(marker) ? location.pathname.slice(0, -marker.length) : "";
   const quotaEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/quota-usage";
   const recoveryEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/cooldown-recovery";
+  const availabilityEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/account-availability";
+  const apiCallEndpoint = prefix + "/v0/management/api-call";
   const recoveryBusy = new Set();
   const recoveryMessages = new Map();
+  const availabilityResults = new Map();
+  const proxyObservations = new Map();
+  let availabilityGeneration = 0, availabilityRunning = false, availabilityCancel = false;
+  let probeExpiryTimer = 0;
+  let probeGeneration = 0, probeTimer = 0, probeRunning = false, probeCancel = false, probeBackoff = 0;
   const accountsEndpoint = prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/accounts";
   const storageKey = "commandcode-or-or-cliproxyapi:quota";
   const values = new Map();
   const labels = new Map();
   const fetchedAt = new Map();
   const errors = new Map();
-  const inFlight = new Set();
+  const inFlight = new Map();
   let cache = {};
   let cards = [];
   let listGeneration = 0;
@@ -216,43 +239,216 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     const parsed = stored ? JSON.parse(stored) : {};
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) cache = parsed;
   } catch (_) {}
-  Object.entries(cache).forEach(([keyID, entry]) => {
-    if (!entry || typeof entry !== "object" || !entry.usage || typeof entry.usage !== "object") return;
-    values.set(keyID, entry.usage);
-    if (typeof entry.label === "string" && entry.label) labels.set(keyID, entry.label);
-    if (typeof entry.fetched_at === "string") fetchedAt.set(keyID, entry.fetched_at);
-  });
+  // 缓存先保留为数据，取得当前账号身份后才允许采用。
   function saveCache() {
     try { sessionStorage.setItem(storageKey, JSON.stringify(cache)); } catch (_) {}
   }
   function applyUsage(keyID, usage, label) {
-    const timestamp = new Date().toISOString();
+    const card = currentCard(keyID);
+    if (!card) return;
+    const timestamp = typeof usage.refreshed_at === "string" ? usage.refreshed_at : "";
     values.set(keyID, usage);
     if (label) labels.set(keyID, label);
     fetchedAt.set(keyID, timestamp);
-    cache[keyID] = {usage, fetched_at: timestamp, label: labels.get(keyID) || ""};
+    cache[keyID] = {usage, fetched_at: timestamp, identity: cardIdentity(card)};
     saveCache();
   }
   function currentCard(keyID) {
     return cards.find(item => item && item.key_id === keyID) || null;
   }
+  function cardIdentity(card) { return card ? card.key_id + "\u0000" + card.auth_id + "\u0000" + card.file_name : ""; }
+  function updateAvailabilitySummary(message = "") {
+    const counts = {available: 0, unavailable: 0, unknown: 0, disabled: 0};
+    cards.forEach(card => {
+      if (card.disabled) { counts.disabled++; return; }
+      const item = availabilityResults.get(card.key_id);
+      if (!item || item.identity !== cardIdentity(card)) counts.unknown++;
+      else if (counts[item.state] !== undefined) counts[item.state]++;
+      else counts.unknown++;
+    });
+    const completed = cards.filter(card => card.disabled || availabilityResults.get(card.key_id)?.identity === cardIdentity(card)).length;
+    const prefixText = message || (availabilityRunning ? "检测中 " + completed + "/" + cards.length + "。" : completed ? "检测结果（账号数）：" : "尚未检测。");
+    $("availability-status").textContent = prefixText + (availabilityResults.size || completed || availabilityRunning ? " 可用 " + counts.available + "，不可用 " + counts.unavailable + "，未知 " + counts.unknown + "，禁用 " + counts.disabled + "。" : "");
+    $("availability-cancel").disabled = !availabilityRunning;
+  }
+  async function runAvailabilityChecks() {
+    if (availabilityRunning || bindingBusy || poolBusy || saving || recoveryBusy.size || inFlight.size || listLoading || !cards.length) return;
+    availabilityRunning = true; availabilityCancel = false; availabilityResults.clear(); syncProxyControls(); render();
+    const generation = ++availabilityGeneration;
+    const targets = cards.map(card => ({...card, identity: cardIdentity(card)}));
+    updateAvailabilitySummary("正在逐账号读取非扣费状态。");
+    let next = 0, finished = 0;
+    const worker = async () => {
+      while (next < targets.length && !availabilityCancel && generation === availabilityGeneration) {
+        const card = targets[next++];
+        if (card.disabled) { finished++; updateAvailabilitySummary("检测中 " + finished + "/" + targets.length + "。"); continue; }
+        try {
+          const result = await request(availabilityEndpoint, {key_id: card.key_id, auth_id: card.auth_id});
+          const live = currentCard(card.key_id);
+          if (generation === availabilityGeneration && live && cardIdentity(live) === card.identity && result.key_id === card.key_id && result.auth_id === card.auth_id) {
+            availabilityResults.set(card.key_id, {...result, identity: card.identity});
+            if (result.usage) applyUsage(card.key_id, result.usage, live.label);
+          }
+        } catch (error) {
+          const live = currentCard(card.key_id);
+          if (generation === availabilityGeneration && live && cardIdentity(live) === card.identity) availabilityResults.set(card.key_id, {state: "unknown", reason_codes: ["request_failed"], error: error.message, checked_at: new Date().toISOString(), identity: card.identity});
+        }
+        finished++; render(); updateAvailabilitySummary("检测中 " + finished + "/" + targets.length + (availabilityCancel ? "，正在停止排队。" : "。"));
+      }
+    };
+    try { await Promise.all(Array.from({length: Math.min(3, targets.length)}, worker)); }
+    finally {
+      if (generation === availabilityGeneration) {
+        availabilityRunning = false; syncProxyControls(); render();
+        updateAvailabilitySummary(availabilityCancel ? "已停止派发新检测；已发出请求结果保留。" : "检测完成（账号计数）。");
+      }
+    }
+  }
+  function stopAvailability() { availabilityCancel = true; updateAvailabilitySummary("停止排队中。"); }
+  function validPublicEndpoint(raw) {
+    try {
+      const url = new URL(raw);
+      return url.protocol === "https:" && !url.username && !url.password && !url.hash && !url.search && !!url.hostname && !/[\r\n]/.test(raw);
+    } catch (_) { return false; }
+  }
+  function validIP(value) {
+    if (typeof value !== "string" || value.length > 64) return false;
+    if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(value)) return value.split(".").every(part => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255);
+    if (!/^[0-9a-f:]+$/i.test(value) || !value.includes(":")) return false;
+    try { return !!new URL("https://[" + value + "]/").hostname; } catch (_) { return false; }
+  }
+  function freshProxy(proxy) {
+    const result = proxyObservations.get(proxy.id);
+    return result && result.status === "success" && result.hash === proxy.url_hash && result.generation === probeGeneration && !document.hidden && Date.now() - Date.parse(result.checkedAt) < 600000;
+  }
+  function probeDescription(proxy) {
+    const result = proxyObservations.get(proxy.id);
+    if (!result || result.hash !== proxy.url_hash) return "未测";
+    if (result.generation !== probeGeneration) return result.status === "checking" ? "旧检测结果未知（策略已改变）" : "已过期";
+    if (result.status === "checking") return "检测中";
+    const state = result.status === "success" ? (freshProxy(proxy) ? "本次探测成功" : "已过期") : result.status === "unsupported" ? "接口不支持" : result.status === "unknown" ? "未知（宿主可能仍在执行）" : "失败";
+    const type = {hosting: "机房 IP", isp: "ISP IP", residential: "住宅 IP", mobile: "移动 IP", unknown: "类型未知"}[result.type] || "类型未知";
+    return state + (result.ip ? " · " + result.ip + " · " + type + " · 来源：" + result.source + (result.organization ? " · " + result.organization : "") : "") + " · " + localTime(result.checkedAt);
+  }
+  function safeProbeText(raw, length) {
+    // 第三方回包也可能回显代理凭据；不把 URI 或在内存中的秘密写入 DOM。
+    let value = raw.replace(/https?:\/\/\S+|socks5h?:\/\/\S+/gi, "[已隐藏 URI]");
+    for (const proxy of proxies) {
+      const url = new URL(proxy.url);
+      for (const part of [url.username, url.password]) {
+        if (!part) continue;
+        const secrets = new Set([part]);
+        try { secrets.add(decodeURIComponent(part)); } catch (_) {}
+        for (const secret of secrets) value = value.split(secret).join("***");
+      }
+    }
+    return value.slice(0, length);
+  }
+  function localTime(raw) {
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? "时间未知" : new Intl.DateTimeFormat(undefined, {dateStyle: "short", timeStyle: "long"}).format(date) + "（" + date.toISOString() + "）";
+  }
+  function stopProbeScheduler() { clearTimeout(probeTimer); clearTimeout(probeExpiryTimer); probeTimer = 0; probeGeneration++; }
+  function scheduleProbeExpiry() {
+    clearTimeout(probeExpiryTimer);
+    const times = [...proxyObservations.values()].filter(r => r.status === "success" && r.generation === probeGeneration).map(r => Date.parse(r.checkedAt) + 600000 - Date.now()).filter(ms => ms > 0);
+    if (!document.hidden && times.length) probeExpiryTimer = setTimeout(() => { renderPool(); scheduleProbeExpiry(); }, Math.min(...times) + 20);
+  }
+  function scheduleProbe(delay) {
+    clearTimeout(probeTimer);
+    if (!$("probe-enabled").checked || document.hidden) return;
+    const generation = probeGeneration;
+    probeTimer = setTimeout(async () => {
+      if (generation !== probeGeneration || probeRunning || document.hidden) return;
+      await runProxyProbes(proxies.map(proxy => proxy.id), true);
+    }, delay);
+  }
+  async function probeOne(proxy, generation) {
+    const echo = $("probe-echo").value.trim(), typeURL = $("probe-type").value.trim();
+    if (!validPublicEndpoint(echo) || (typeURL && !validPublicEndpoint(typeURL))) throw new Error("仅接受不带凭据的 HTTPS 端点，不允许 query、fragment 或 URL userinfo。");
+    const started = Date.now();
+    const response = await request(apiCallEndpoint, {method: "GET", url: echo, proxy_url: proxy.url, header: {Accept: "application/json"}});
+    if (generation !== probeGeneration) return;
+    if (!response || !Number.isInteger(response.status_code) || response.status_code < 200 || response.status_code >= 300) throw new Error("回显服务返回 HTTP 错误。");
+    let body;
+    try { body = JSON.parse(response.body); } catch (_) { throw new Error("回显响应不是 JSON。"); }
+    if (!validIP(body.ip)) throw new Error("回显端点未返回有效 IP。");
+    const observation = {id: proxy.id, hash: proxy.url_hash, generation, checkedAt: new Date().toISOString(), duration: Date.now() - started, status: "success", ip: body.ip, type: "unknown", source: new URL(echo).origin};
+    if (typeURL) {
+      try {
+        const url = new URL(typeURL); url.searchParams.set("ip", body.ip);
+        const classified = await request(apiCallEndpoint, {method: "GET", url: url.href, proxy_url: proxy.url, header: {Accept: "application/json"}});
+        if (generation === probeGeneration && classified && Number.isInteger(classified.status_code) && classified.status_code >= 200 && classified.status_code < 300) {
+          const result = JSON.parse(classified.body);
+          if (result.ip === body.ip && ["hosting", "isp", "residential", "mobile", "unknown"].includes(result.type)) {
+            observation.type = result.type;
+            observation.asn = typeof result.asn === "string" ? safeProbeText(result.asn, 100) : "";
+            observation.organization = typeof result.organization === "string" ? safeProbeText(result.organization, 120) : "";
+            observation.source = new URL(typeURL).origin + (typeof result.source === "string" ? " / " + safeProbeText(result.source, 100) : "");
+          }
+        }
+      } catch (error) { if (error.networkUnknown || [401, 403, 404, 405].includes(error.status)) { probeCancel = true; $("probe-enabled").checked = false; } /* 分类失败不改变已成功的连通状态。 */ }
+    }
+    if (generation === probeGeneration && proxies.some(p => p.id === proxy.id && p.url_hash === proxy.url_hash)) proxyObservations.set(proxy.id, observation);
+  }
+  async function runProxyProbes(ids, scheduled = false) {
+    if (probeRunning || poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size || saving || listLoading || !poolReady || document.hidden) { if (scheduled) scheduleProbe(60000); return; }
+    const echo = $("probe-echo").value.trim();
+    if (!validPublicEndpoint(echo)) { status("probe-status", "请填写可信 HTTPS 回显端点；端点不得包含凭据或 query。", true); return; }
+    clearTimeout(probeTimer);
+    probeRunning = true; probeCancel = false; const generation = probeGeneration;
+    const targets = ids.map(id => proxies.find(proxy => proxy.id === id)).filter(Boolean);
+    let next = 0, finished = 0, failures = 0;
+    syncProxyControls();
+    status("probe-status", "正在检测 " + targets.length + " 个代理；结果仅表示本次端点探测。");
+    const worker = async () => {
+      while (next < targets.length && !probeCancel && generation === probeGeneration && !document.hidden) {
+        const proxy = targets[next++];
+        proxyObservations.set(proxy.id, {hash: proxy.url_hash, generation, status: "checking"}); renderPool();
+        try { await probeOne(proxy, generation); }
+        catch (error) {
+          failures++;
+          // 超时后宿主可能仍在执行，暂停本轮及定时任务。
+          if (error.networkUnknown || [401, 403, 404, 405].includes(error.status)) { probeCancel = true; $("probe-enabled").checked = false; }
+          if (generation === probeGeneration) proxyObservations.set(proxy.id, {id: proxy.id, hash: proxy.url_hash, generation, checkedAt: new Date().toISOString(), status: error.networkUnknown ? "unknown" : [404, 405].includes(error.status) ? "unsupported" : "failure", type: "unknown"});
+        }
+        finished++;
+        if (generation === probeGeneration) { renderPool(); status("probe-status", "已完成 " + finished + "/" + targets.length + "；失败 " + failures + "。", failures > 0); }
+      }
+    };
+    try { await Promise.all(Array.from({length: Math.min(2, targets.length)}, worker)); }
+    finally {
+      probeRunning = false; syncProxyControls(); renderPool();
+      scheduleProbeExpiry();
+      if (generation === probeGeneration) {
+        if (scheduled && failures) probeBackoff = Math.min(probeBackoff + 1, 6); else probeBackoff = 0;
+        const interval = Math.min(1440, Math.max(1, Number($("probe-interval").value) || 5)) * 60000;
+        const jittered = interval * (0.9 + Math.random() * 0.2) * Math.pow(2, probeBackoff);
+        scheduleProbe(jittered);
+        if (probeCancel) status("probe-status", "已停止派发新检测；在途请求可能仍由宿主执行。", true);
+        else if (!targets.length) status("probe-status", "代理池为空，没有检测目标。");
+      }
+    }
+  }
   function refreshCard(card, alreadyQueued) {
     const keyID = card.key_id;
-    if (!keyID) return Promise.resolve();
+    const identity = cardIdentity(card), generation = listGeneration;
+    if (!keyID || availabilityRunning || recoveryBusy.has(keyID)) return Promise.resolve();
     if (!alreadyQueued) {
       if (inFlight.has(keyID)) return Promise.resolve();
-      inFlight.add(keyID);
+      inFlight.set(keyID, identity);
       errors.delete(keyID);
       render();
     }
     return request(quotaEndpoint, {key_id: keyID}).then(result => {
-      inFlight.delete(keyID);
+      if (inFlight.get(keyID) === identity) inFlight.delete(keyID);
       const live = currentCard(keyID);
-      if (!live) return;
-      // Account state belongs to the latest list snapshot, not to a possibly
-      // older quota request that was started before a disable or rename.
-      if (typeof result.label === "string" && result.label) live.label = result.label;
-      if (result.email) live.email = result.email;
+      if (!live || cardIdentity(live) !== identity || (result.auth_id && result.auth_id !== live.auth_id)) return;
+      // 最新列表中的名称优先，旧额度请求不能覆盖其后的重命名。
+      if (generation === listGeneration) {
+        if (typeof result.label === "string" && result.label) live.label = result.label;
+        if (result.email) live.email = result.email;
+      }
       if (result.error) {
         errors.set(keyID, result.error);
         render();
@@ -262,29 +458,42 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
       if (result.usage && typeof result.usage === "object") applyUsage(keyID, result.usage, result.label || live.label);
       render();
     }).catch(err => {
-      inFlight.delete(keyID);
-      if (!currentCard(keyID)) return;
+      if (inFlight.get(keyID) === identity) inFlight.delete(keyID);
+      if (!currentCard(keyID) || cardIdentity(currentCard(keyID)) !== identity) return;
       errors.set(keyID, err.message || "Refresh failed");
       render();
     });
   }
   async function recoverCooldown(card) {
     const key = card.key_id;
-    if (recoveryBusy.has(key) || inFlight.has(key)) return;
+    if (recoveryBusy.size || inFlight.has(key) || availabilityRunning || bindingBusy || poolBusy || saving || listLoading) return;
+    const identity = cardIdentity(card);
     recoveryBusy.add(key);
     recoveryMessages.set(key, "正在核对新鲜额度和账号身份…"); render();
     try {
       const preview = await request(recoveryEndpoint, {key_id: key, auth_id: card.auth_id});
       const live = currentCard(key);
-      if (!live || live.auth_id !== card.auth_id || live.disabled) throw new Error("账号状态已改变，请刷新列表。");
+      if (!live || cardIdentity(live) !== identity || live.disabled) throw new Error("账号状态已改变，请刷新列表。");
       if (preview.usage) applyUsage(key, preview.usage, live.label);
       if (!preview.token || !window.confirm((live.label || live.file_name) + "\n\n" + preview.warning)) {
         recoveryMessages.set(key, "已取消，未重置 CPA 冷却。"); return;
       }
       recoveryMessages.set(key, "正在恢复宿主冷却…"); render();
       const result = await request(recoveryEndpoint, {key_id: key, auth_id: card.auth_id, token: preview.token, confirm: true});
+      if (cardIdentity(currentCard(key)) !== identity) return;
       recoveryMessages.set(key, result.message || "宿主已确认操作，请刷新管理中心核对。");
-    } catch (err) { recoveryMessages.set(key, err.message || "结果未知，请刷新宿主状态核对。"); }
+      availabilityResults.delete(key);
+      try {
+        const actual = await request(prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/account-details", {key_id: key, auth_id: card.auth_id});
+        if (cardIdentity(actual) === identity && cardIdentity(currentCard(key)) === identity) {
+          cards[cards.findIndex(c => c.key_id === key)] = actual;
+        }
+      } catch (_) { recoveryMessages.set(key, (result.message || "宿主已确认操作。") + " 本页回读失败，请刷新核对；不会自动重试重置。"); }
+    } catch (err) {
+      if (cardIdentity(currentCard(key)) !== identity) return;
+      if (err.data?.usage) applyUsage(key, err.data.usage, currentCard(key).label);
+      recoveryMessages.set(key, err.data?.reason_code ? err.message + "（" + err.data.reason_code + (err.data.blocking_window ? "，" + err.data.blocking_window + " 窗口仍耗尽" : "") + "）" : err.message || "结果未知，请刷新宿主状态核对。");
+    }
     finally { recoveryBusy.delete(key); render(); }
   }
   function auth() {
@@ -313,7 +522,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     try {
       response = await fetch(url, {method, headers: {"Content-Type": "application/json", Authorization: "Bearer " + key, ...extra},
         body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(40000), redirect: "error", cache: "no-store"});
-    } catch (_) { throw new Error("请求超时或网络失败，结果未知，请刷新并核对后重试。"); }
+    } catch (_) { const error = new Error("请求超时或网络失败，结果未知，请刷新并核对后重试。"); error.networkUnknown = true; throw error; }
     {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -321,7 +530,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
         const error = new Error(response.status === 412 ? "配置已被其他操作修改，请刷新并重新确认。" :
           response.status === 401 || response.status === 403 ? "管理登录已失效或权限不足。" : "管理请求失败（HTTP " + response.status + "）。");
         error.status = response.status;
-        if (url === accountsEndpoint || url === quotaEndpoint || url === recoveryEndpoint) error.message = typeof data.error === "string" ? data.error : error.message;
+        if (url === accountsEndpoint || url === quotaEndpoint || url === recoveryEndpoint || url === availabilityEndpoint) error.message = typeof data.error === "string" ? data.error : error.message;
+        if (url === recoveryEndpoint) error.data = data;
         throw error;
       }
       return {data, etag: response.headers.get("ETag")};
@@ -368,19 +578,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     return p.label + " · " + p.id + " · " + p.display + "（设置已保存，出口未验证）";
   }
   function syncProxyControls() {
-    const busy = poolBusy || bindingBusy;
+    const busy = poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size > 0 || saving;
     syncReloadButton();
     saveButton.disabled = saving || busy;
     apiKeyInput.disabled = saving || busy;
-    $("proxy-reload").disabled = busy;
-    $("proxy-validate").disabled = busy || !poolReady;
-    $("proxy-import").disabled = busy || !poolReady || !importRows.some(r => r.status === "valid");
+    $("proxy-reload").disabled = busy || probeRunning;
+    $("proxy-validate").disabled = busy || probeRunning || listLoading || !poolReady;
+    $("proxy-import").disabled = busy || probeRunning || listLoading || !poolReady || !importRows.some(r => r.status === "valid");
     $("proxy-batch-preview").disabled = busy || !poolReady || !fieldsSupported || !selectedAccounts.size;
     $("proxy-random").disabled = busy || !poolReady || !fieldsSupported || !proxies.length || !cards.some(c => unbound(c) && (!selectedAccounts.size || selectedAccounts.has(c.file_name)));
+    $("proxy-balance").disabled = busy || !poolReady || !fieldsSupported || !cards.length || !proxies.some(freshProxy);
     $("proxy-batch-id").disabled = busy || !poolReady || !fieldsSupported;
-    $("proxy-plan-apply").disabled = busy || !allocation.length;
+    $("availability-check").disabled = availabilityRunning || saving || inFlight.size > 0 || !listReady || !cards.length || listLoading || busy;
+    $("availability-cancel").disabled = !availabilityRunning;
+    $("probe-all").disabled = busy || probeRunning || !poolReady || !proxies.length;
+    $("probe-stop").disabled = !probeRunning;
+    $("probe-enabled").disabled = busy;
+    $("proxy-plan-apply").disabled = busy || probeRunning || !allocation.length;
     $("proxy-plan-cancel").disabled = busy;
-    $("proxy-retry").disabled = busy || !poolReady || !fieldsSupported;
+    $("proxy-retry").disabled = busy || probeRunning || !poolReady || !fieldsSupported;
     $("account-select-all").disabled = busy || !cards.length;
     $("account-selected").textContent = "已选 " + selectedAccounts.size + " 个账号";
     $("account-select-all").checked = !!cards.length && cards.every(c => selectedAccounts.has(c.file_name));
@@ -424,10 +640,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   }
   function adoptDirectory(value) {
     proxies = value.proxies; poolETag = value.etag; poolReady = true;
+    for (const [id, result] of proxyObservations) if (!proxies.some(p => p.id === id && p.url_hash === result.hash)) proxyObservations.delete(id);
     invalidateImport(); cancelAllocation(); renderPool(); render();
   }
   async function refreshPool() {
-    if (poolBusy || bindingBusy) return;
+    if (poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size || saving || probeRunning) return;
     const generation = ++poolGeneration;
     poolBusy = true; poolReady = false; syncProxyControls();
     status("proxy-status", "正在读取代理池…");
@@ -463,17 +680,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     const previous = $("proxy-batch-id").value;
     proxyOptions($("proxy-batch-id"));
     if (proxies.some(p => p.id === previous)) $("proxy-batch-id").value = previous;
-    const list = $("proxy-items"); list.textContent = "";
+    const list = $("proxy-items");
+    const active = document.activeElement;
+    const focusedID = list.contains(active) ? active.closest("li")?.dataset.proxyId : null;
+    const focusedText = focusedID ? active.textContent : null;
+    list.textContent = "";
     const query = $("proxy-search").value.trim().toLowerCase();
     proxies.filter(p => (p.id + " " + p.label + " " + p.display).toLowerCase().includes(query)).forEach(p => {
-      const li = node("li", undefined, "proxy-item");
+    const li = node("li", undefined, "proxy-item"); li.dataset.proxyId = p.id;
       const info = node("div", undefined, "proxy-info");
       info.append(node("strong", p.label), node("div", p.id), node("code", p.display));
+      const observation = proxyObservations.get(p.id);
+      const observationNode = node("div", probeDescription(p), freshProxy(p) ? "quota-success" : observation?.status === "failure" ? "quota-error" : "quota-muted");
+      info.append(observationNode);
       const count = cards.filter(c => c.proxy_id === p.id || (p.url_hash && c.proxy_url_hash === p.url_hash)).length;
       info.append(node("div", "引用账号：" + count, "quota-muted"));
       const rename = node("button", "改标签", "quota-refresh"); rename.type = "button";
-      rename.disabled = !poolReady || poolBusy || bindingBusy;
+      const settingsBusy = poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size > 0 || saving || listLoading || probeRunning;
+      rename.disabled = !poolReady || settingsBusy;
       rename.onclick = async () => {
+        if (poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size || saving || listLoading || probeRunning) return;
         const label = window.prompt("代理标签（不包含凭据）", p.label)?.trim();
         if (!label || label === p.label) return;
         if (label.length > 128 || /[\x00-\x1f\x7f]/.test(label)) { status("proxy-status", "标签最多 128 字符，不能包含控制字符。", true); return; }
@@ -486,8 +712,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
         });
       };
       const remove = node("button", "删除", "quota-refresh"); remove.type = "button";
-      remove.disabled = !poolReady || poolBusy || bindingBusy || !!count || !listReady || !!listError || cards.some(c => !proxyKnown(c));
+      remove.disabled = !poolReady || settingsBusy || !!count || !listReady || !!listError || cards.some(c => !proxyKnown(c));
       remove.onclick = async () => {
+        if (settingsBusy) return;
         await poolMutation(async () => {
           await loadList();
           if (listError || cards.some(c => !proxyKnown(c))) throw new Error("账号信息读取不完整，不能删除代理。");
@@ -496,18 +723,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
           await persistDirectory(proxies.filter(item => item.id !== p.id));
         });
       };
-      li.append(info, rename, remove); list.appendChild(li);
+      const probe = node("button", "检测出口", "quota-refresh"); probe.type = "button";
+      probe.disabled = !poolReady || settingsBusy;
+      probe.onclick = () => runProxyProbes([p.id]);
+      li.append(info, probe, rename, remove); list.appendChild(li);
     });
     syncProxyControls();
+    if (focusedID) {
+      const item = Array.from(list.children).find(el => el.dataset.proxyId === focusedID);
+      const button = item && Array.from(item.querySelectorAll("button")).find(el => el.textContent === focusedText && !el.disabled);
+      if (button) button.focus({preventScroll: true});
+    }
   }
   async function poolMutation(fn) {
-    if (poolBusy || bindingBusy || !poolReady) return;
-    poolBusy = true; syncProxyControls(); render(); renderPool();
+    if (poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size || saving || listLoading || probeRunning || !poolReady) return;
+    poolBusy = true; syncProxyControls();
+    render(); renderPool();
     try { await fn(); } catch (err) { status("proxy-status", err.message || "操作结果未知，请刷新后核对。", true); }
     finally { poolBusy = false; renderPool(); render(); syncProxyControls(); }
   }
   async function previewImport() {
-    if (!poolReady || poolBusy || bindingBusy) return;
+    if (!poolReady || poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size || saving || listLoading || probeRunning) return;
     invalidateImport();
     const generation = importGeneration;
     const lines = $("proxy-lines").value;
@@ -553,7 +789,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     });
   }
   function previewAllocation(items) {
-    if (poolBusy || bindingBusy || !poolReady || !fieldsSupported) return;
+    if (poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size || !poolReady || !fieldsSupported) return;
     if (!items.length) { status("proxy-bind-status", "没有可分配的账号。随机只填充未绑定账号，外部设置不会自动覆盖。", true); return; }
     allocation = items.map(item => ({...item}));
     failedAllocation = []; $("proxy-retry").hidden = true;
@@ -564,7 +800,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     syncProxyControls();
   }
   function makeAllocation(card, proxy) {
-    return {name: card.file_name, proxyID: proxy?.id || "", url: proxy?.url || "", hash: proxy?.url_hash || "",
+    return {name: card.file_name, keyID: card.key_id, authID: card.auth_id, disabled: card.disabled, proxyID: proxy?.id || "", url: proxy?.url || "", hash: proxy?.url_hash || "",
       previousID: card.proxy_id, previousHash: card.proxy_url_hash, previousConfigured: card.proxy_configured};
   }
   function allocationMatches(card, target) {
@@ -574,7 +810,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   function previewRandom() {
     const eligible = cards.filter(c => unbound(c) && (!selectedAccounts.size || selectedAccounts.has(c.file_name)));
     if (!proxies.length) { status("proxy-bind-status", "请先导入代理。", true); return; }
-    previewAllocation(eligible.map(c => makeAllocation(c, proxies[randomIndex(proxies.length)])));
+    const loads = new Map(proxies.map(p => [p.id, cards.filter(c => c.proxy_id === p.id).length]));
+    previewAllocation(shuffle(eligible).map(card => {
+      const min = Math.min(...loads.values()), options = proxies.filter(p => loads.get(p.id) === min);
+      const proxy = options[randomIndex(options.length)];
+      loads.set(proxy.id, min + 1);
+      return makeAllocation(card, proxy);
+    }));
+  }
+  function shuffle(items) {
+    const copy = items.slice();
+    for (let i = copy.length - 1; i > 0; i--) { const j = randomIndex(i + 1); [copy[i], copy[j]] = [copy[j], copy[i]]; }
+    return copy;
+  }
+  function previewBalanced() {
+    const candidates = shuffle(proxies.filter(freshProxy));
+    if (!candidates.length) { status("proxy-bind-status", "没有新鲜探测成功的代理，请先检测；不会回退到仅格式有效的代理。", true); return; }
+    const allowExternal = $("balance-external").checked, includeDisabled = $("balance-disabled").checked;
+    const eligible = shuffle(cards.filter(c => (includeDisabled || !c.disabled) && proxyKnown(c) && (allowExternal || unbound(c) || proxies.some(p => p.id === c.proxy_id && p.url_hash === c.proxy_url_hash))));
+    if (allowExternal && !window.confirm("允许覆盖外部／未知归属的原生代理绑定？读取失败的账号仍会跳过。")) return;
+    previewAllocation(eligible.map((card, index) => ({...makeAllocation(card, candidates[index % candidates.length]), requireFresh: true, probeGeneration})));
+    status("proxy-bind-status", "均分范围为本插件 CommandCode 账号，已跳过 " + (cards.length - eligible.length) + " 个受保护或禁用账号。完整成功时本次目标数量差不超过1；部分失败可能不均衡。");
   }
   function appendProxyBinding(section, card) {
     const box = node("div", undefined, "proxy-bind");
@@ -584,13 +840,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     const safeID = "proxy-card-" + String(cards.indexOf(card)); select.id = safeID; label.htmlFor = safeID;
     select.value = proxyDrafts.get(card.file_name) ?? (proxies.some(p => p.id === card.proxy_id) ? card.proxy_id : "");
     select.onchange = () => proxyDrafts.set(card.file_name, select.value);
-    select.disabled = !poolReady || poolBusy || bindingBusy || !proxyKnown(card) || !fieldsSupported;
+    select.disabled = !poolReady || poolBusy || bindingBusy || availabilityRunning || recoveryBusy.size > 0 || saving || !proxyKnown(card) || !fieldsSupported;
     const apply = node("button", "预览代理设置", "quota-refresh"); apply.type = "button"; apply.disabled = select.disabled;
     apply.onclick = () => previewAllocation([makeAllocation(card, proxies.find(p => p.id === select.value))]);
     box.append(summary, label, select, apply); section.appendChild(box);
   }
   async function applyAllocation(targets) {
-    if (bindingBusy || poolBusy || !poolReady || !targets.length || !fieldsSupported) return;
+    if (bindingBusy || poolBusy || availabilityRunning || recoveryBusy.size || probeRunning || !poolReady || !targets.length || !fieldsSupported) return;
     bindingBusy = true; cancelAllocation(); syncProxyControls(); render();
     const results = [];
     $("proxy-results").textContent = "";
@@ -604,8 +860,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
       await loadList();
       if (listError) throw new Error("无法核对最新账号列表，未继续保存。");
       for (const target of targets) {
-        const card = cards.find(c => c.file_name === target.name);
-        if (!card || !proxyKnown(card)) { results.push({...target, outcome: "失败：账号已移除或读取失败"}); continue; }
+        let card = cards.find(c => c.file_name === target.name);
+        if (target.authID) {
+          try {
+            const actual = await request(prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/account-details", {key_id: target.keyID, auth_id: target.authID});
+            if (actual.key_id !== target.keyID || actual.auth_id !== target.authID || actual.file_name !== target.name) throw new Error("账号身份已改变");
+            card = actual;
+            const index = cards.findIndex(c => c.key_id === target.keyID && c.auth_id === target.authID);
+            if (index >= 0) cards[index] = actual;
+          } catch (_) { results.push({...target, outcome: "失败：无法核对账号最新设置，请刷新后重试"}); continue; }
+        }
+        if (!card || !proxyKnown(card) || card.key_id !== target.keyID || card.auth_id !== target.authID || card.disabled !== target.disabled) { results.push({...target, outcome: "失败：账号已移除或读取失败"}); continue; }
+        if (target.requireFresh && (target.probeGeneration !== probeGeneration || !proxies.some(p => p.id === target.proxyID && p.url_hash === target.hash && freshProxy(p)))) {
+          results.push({...target, outcome: "失败：探测已过期或策略已变更，请重新预览"}); continue;
+        }
         if (allocationMatches(card, target)) { results.push({...target, outcome: "成功"}); continue; }
         // 预览后账号可能已被别的页面绑定；即使是重试也不能覆盖新设置。
         if (card.proxy_id !== target.previousID || card.proxy_url_hash !== target.previousHash || card.proxy_configured !== target.previousConfigured) {
@@ -620,8 +888,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
         }
         // PATCH 可能已落盘但响应丢失，始终回读，不在这里自动重发。
         try {
-          await loadList();
-          const actual = cards.find(c => c.file_name === target.name);
+          let actual;
+          if (target.authID) {
+            actual = await request(prefix + "/v0/management/plugins/commandcode-or-or-cliproxyapi/account-details", {key_id: target.keyID, auth_id: target.authID});
+            if (actual.auth_id !== target.authID || actual.file_name !== target.name) throw new Error("账号已变化");
+            const index = cards.findIndex(c => c.key_id === target.keyID && c.auth_id === target.authID);
+            if (index >= 0) cards[index] = actual;
+          } else {
+            await loadList(); actual = cards.find(c => c.file_name === target.name);
+          }
           const matches = !listError && allocationMatches(actual, target);
           results.push({...target, outcome: matches ? "成功" : writeError?.status === 404 || writeError?.status === 405 ? "失败：宿主接口不支持或账号已移除" : "未知：回读未匹配，请核对后重试"});
           if (matches) proxyDrafts.delete(target.name);
@@ -658,7 +933,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   }
   function syncReloadButton() {
     // 账号写入/删除核对期间使用独占列表刷新，避免慢响应被另一次刷新取代。
-    reloadButton.disabled = listLoading || bindingBusy || poolBusy;
+    reloadButton.disabled = listLoading || bindingBusy || poolBusy || availabilityRunning || recoveryBusy.size > 0;
     reloadButton.textContent = listLoading ? "正在刷新列表…" : "刷新账户列表";
   }
   function text(parent, value) { const node = document.createElement("span"); node.textContent = value == null || value === "" ? "-" : value; parent.appendChild(node); }
@@ -668,15 +943,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     const fill = document.createElement("div"); fill.className = usage.status === "exceeded" ? "quota-fill is-exceeded" : "quota-fill";
     const percent = Math.max(0, Math.min(100, Number(usage.percent) || 0));
     fill.style.width = percent + "%";
-    track.setAttribute("role", "progressbar"); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "100"); track.setAttribute("aria-valuenow", String(percent)); track.setAttribute("aria-label", "Quota used"); track.appendChild(fill);
-    value.textContent = percent + "%";
+    track.setAttribute("role", "progressbar"); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "100"); track.setAttribute("aria-valuenow", String(percent)); track.setAttribute("aria-label", row.querySelector(".quota-label").textContent + " 已用额度"); track.appendChild(fill);
+    const remaining = usage.status === "exceeded" ? 0 : usage.status === "unlimited" || usage.cap === 0 ? null : Math.round(Math.max(0, Math.min(100, (usage.cap - usage.used) / usage.cap * 100)) + 1e-9);
+    value.textContent = "已用 " + percent + "% · " + (remaining === null ? "无固定上限" : "剩余 " + remaining + "%");
     const meta = document.createElement("div"); meta.className = usage.status === "exceeded" ? "quota-meta is-exceeded" : "quota-meta";
-    const parts = [usage.status || "ok"];
-    if (Number(usage.cap) > 0) parts.push((Number(usage.used) || 0).toFixed(2) + " / " + Number(usage.cap).toFixed(2) + " credits");
+    const parts = [usage.known === false ? "未知" : usage.status || "ok"];
+    if (usage.known !== false && Number(usage.cap) > 0) parts.push((Number(usage.used) || 0).toFixed(2) + " / " + Number(usage.cap).toFixed(2) + " credits");
     (extraParts || []).forEach(part => parts.push(part));
+    if (usage.known === false) { value.textContent = "数据未知"; track.removeAttribute("aria-valuenow"); fill.style.width = "0%"; }
     if (usage.resets_at) {
       const reset = new Date(usage.resets_at);
-      parts.push("resets " + reset.toLocaleString());
+      parts.push("上游窗口重置 " + localTime(usage.resets_at));
       if (withDaysLeft && !Number.isNaN(reset.getTime())) {
         const days = Math.max(0, Math.ceil((reset.getTime() - Date.now()) / 864e5));
         parts.push(days === 1 ? "1 day left" : days + " days left");
@@ -686,26 +963,30 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     row.append(value, track, meta);
   }
   function render() {
-    app.textContent = "";
+    const oldGrid = app.querySelector(".quota-grid");
+    const oldSections = new Map(oldGrid ? Array.from(oldGrid.children).map(el => [el.dataset.identity, el]) : []);
     selectedAccounts.forEach(name => { if (!cards.some(c => c.file_name === name)) selectedAccounts.delete(name); });
-    renderPool();
     syncProxyControls();
+    updateAvailabilitySummary();
     if (!cards.length) {
       if (listError) return;
+      app.textContent = "";
       const p = document.createElement("p"); p.className = "quota-muted"; p.setAttribute("role", "status"); p.textContent = listReady ? "还没有 CommandCode 账户。" : "正在加载账户…"; app.appendChild(p); return;
     }
-    const grid = document.createElement("div"); grid.className = "quota-grid";
+    const grid = oldGrid || document.createElement("div"); grid.className = "quota-grid";
+    if (!oldGrid) { app.textContent = ""; app.appendChild(grid); }
+    const retained = new Set();
     cards.forEach(card => {
-      const section = document.createElement("section"); section.className = "quota-card";
+      let section = document.createElement("section"); section.className = "quota-card"; section.dataset.identity = cardIdentity(card);
       const header = document.createElement("div"); header.className = "quota-card-header";
       const choose = node("input", undefined, "proxy-check"); choose.type = "checkbox";
       choose.setAttribute("aria-label", "选择账号 " + card.label); choose.checked = selectedAccounts.has(card.file_name);
-      choose.disabled = bindingBusy || poolBusy;
+      choose.disabled = bindingBusy || poolBusy || availabilityRunning || recoveryBusy.size > 0;
       choose.onchange = () => { if (choose.checked) selectedAccounts.add(card.file_name); else selectedAccounts.delete(card.file_name); syncProxyControls(); };
       header.appendChild(choose);
       const cached = values.get(card.key_id);
       const badge = document.createElement("span"); badge.className = "credential-badge"; badge.textContent = (cached && cached.plan) || "CC"; badge.setAttribute("aria-hidden", "true");
-      const title = document.createElement("h2"); title.className = "credential-name"; title.textContent = labels.get(card.key_id) || card.label; header.append(badge, title); section.appendChild(header);
+      const title = document.createElement("h2"); title.className = "credential-name"; title.textContent = card.label || card.file_name; header.append(badge, title); section.appendChild(header);
       const account = document.createElement("div"); account.className = "quota-account";
       const fileName = document.createElement("span"); fileName.className = "quota-meta"; fileName.textContent = "文件名 " + (card.file_name || "-");
       const accountState = document.createElement("span"); accountState.className = card.disabled ? "quota-warning" : "quota-meta"; accountState.textContent = card.disabled ? "已禁用" : "已启用";
@@ -718,21 +999,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
         const row = document.createElement("div"); row.className = "quota-row";
         const rowHeader = document.createElement("div"); rowHeader.className = "quota-row-header"; const label = document.createElement("span"); label.className = "quota-label"; label.textContent = entry[1]; rowHeader.appendChild(label); row.appendChild(rowHeader);
         const usage = values.get(card.key_id) && values.get(card.key_id)[name];
-        if (usage) renderUsage(row, usage, null, name === "weekly"); else { const pending = document.createElement("div"); pending.className = "quota-meta"; pending.textContent = "Not refreshed"; row.appendChild(pending); }
+        if (usage) { renderUsage(row, usage, null, name === "weekly"); row.querySelector(".quota-track").setAttribute("aria-label", card.label + " " + entry[1] + " 已用额度"); } else { const pending = document.createElement("div"); pending.className = "quota-meta"; pending.textContent = "Not refreshed"; row.appendChild(pending); }
         section.appendChild(row);
       });
       if (cached) {
         const row = document.createElement("div"); row.className = "quota-row";
         const rowHeader = document.createElement("div"); rowHeader.className = "quota-row-header"; const label = document.createElement("span"); label.className = "quota-label"; label.textContent = "Monthly credits"; rowHeader.appendChild(label); row.appendChild(rowHeader);
-        const left = Number(cached.credits_left) || 0;
+        const left = Number(cached.credits_left), purchased = Number(cached.purchased_credits ?? 0);
         const month = cached.month;
-        if (month) { renderUsage(row, month, [left.toFixed(2) + " credits left"], true); } else { const meta = document.createElement("div"); meta.className = "quota-meta"; text(meta, left.toFixed(2) + " credits left (plan unknown)"); row.appendChild(meta); }
+        const balance = cached.balances_known !== false && Number.isFinite(left) && Number.isFinite(purchased) ? (left + purchased).toFixed(2) + " credits left（计划 " + left.toFixed(2) + " + 购买 " + purchased.toFixed(2) + "）" : "余额未知";
+        if (month) { renderUsage(row, month, [balance], true); row.querySelector(".quota-track").setAttribute("aria-label", card.label + " Monthly credits 已用额度"); } else { const meta = document.createElement("div"); meta.className = "quota-meta"; text(meta, balance + " (plan unknown)"); row.appendChild(meta); }
         section.appendChild(row);
       }
       const updated = fetchedAt.get(card.key_id);
-      if (updated) { const timestamp = document.createElement("div"); timestamp.className = "quota-meta"; timestamp.textContent = "Updated " + new Date(updated).toLocaleString(); section.appendChild(timestamp); }
+      if (updated) { const timestamp = document.createElement("div"); timestamp.className = "quota-meta"; timestamp.textContent = "取数时间 " + localTime(updated); section.appendChild(timestamp); }
+      if (cached?.local_cooldown?.active) section.appendChild(node("p", "插件策略截止：" + cached.local_cooldown.window + " · " + localTime(cached.local_cooldown.until) + " · 来源：" + cached.local_cooldown.source, "quota-warning"));
+      if (card.unavailable || card.status === "error") section.appendChild(node("p", "宿主仍受限：" + (card.status_message || "请在宿主核对；插件策略截止不代表宿主实际截止"), "quota-warning"));
+      const availability = availabilityResults.get(card.key_id);
+      if (availability?.identity === cardIdentity(card)) section.appendChild(node("p", "非扣费检测：" + ({available: "可用（未验证模型）", unavailable: "不可用", unknown: "未知", disabled: "已禁用"}[availability.state] || "未知") + " · " + (availability.error || (availability.reason_codes || []).join(" / ")) + " · " + localTime(availability.checked_at) + (availability.runtime_until ? " · 宿主截止 " + localTime(availability.runtime_until) : ""), "quota-meta"));
       const actions = document.createElement("div"); actions.className = "quota-actions";
-      const button = document.createElement("button"); button.className = "quota-refresh"; button.textContent = inFlight.has(card.key_id) ? "Refreshing..." : "Refresh"; button.disabled = inFlight.has(card.key_id) || recoveryBusy.has(card.key_id); button.setAttribute("aria-label", "Refresh " + card.label);
+      const button = document.createElement("button"); button.className = "quota-refresh"; button.textContent = inFlight.has(card.key_id) ? "Refreshing..." : "Refresh"; button.disabled = availabilityRunning || bindingBusy || inFlight.has(card.key_id) || recoveryBusy.has(card.key_id); button.setAttribute("aria-label", "Refresh " + card.label);
       const error = document.createElement("span"); error.className = "quota-error"; error.setAttribute("role", "status"); error.textContent = errors.get(card.key_id) || "";
       button.onclick = () => { refreshCard(card); };
       actions.append(button);
@@ -740,15 +1026,40 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
         const recover = document.createElement("button"); recover.type = "button"; recover.className = "quota-refresh";
         recover.textContent = recoveryBusy.has(card.key_id) ? "正在核对恢复…" : "核对并恢复冷却";
         recover.setAttribute("aria-label", "核对并恢复冷却 " + card.label);
-        recover.disabled = card.disabled || inFlight.has(card.key_id) || recoveryBusy.has(card.key_id);
+        recover.disabled = card.disabled || availabilityRunning || bindingBusy || poolBusy || saving || listLoading || inFlight.has(card.key_id) || recoveryBusy.size > 0;
         recover.onclick = () => recoverCooldown(card); actions.append(recover);
       }
       actions.append(error); section.appendChild(actions);
       const noticeText = recoveryMessages.get(card.key_id) || (cached && cached.recovery_notice);
       if (noticeText) { const notice = document.createElement("div"); notice.className = "quota-meta"; notice.setAttribute("role", "status"); notice.textContent = noticeText; section.appendChild(notice); }
-      grid.appendChild(section);
+      const old = oldSections.get(section.dataset.identity);
+      if (old) {
+        // 保留代理选择节点；无变化的卡片连同其键盘焦点均不重建。
+        if (old._signature === section.innerHTML + "|" + selectedAccounts.has(card.file_name) + "|" + (proxyDrafts.get(card.file_name) ?? "")) { retained.add(old.dataset.identity); return; }
+        const oldBinding = old.querySelector(".proxy-bind"), newBinding = section.querySelector(".proxy-bind");
+        if (oldBinding && newBinding) {
+          const select = oldBinding.querySelector("select"), nextSelect = newBinding.querySelector("select");
+          if (select.innerHTML !== nextSelect.innerHTML) select.innerHTML = nextSelect.innerHTML;
+          select.disabled = nextSelect.disabled;
+          if (document.activeElement !== select) select.value = nextSelect.value;
+          oldBinding.querySelector("p").textContent = newBinding.querySelector("p").textContent;
+          oldBinding.querySelector("button").disabled = newBinding.querySelector("button").disabled;
+          oldBinding.querySelector("button").onclick = () => {
+            const live = currentCard(card.key_id);
+            if (live && cardIdentity(live) === cardIdentity(card)) previewAllocation([makeAllocation(live, proxies.find(p => p.id === select.value))]);
+          };
+          newBinding.replaceWith(oldBinding);
+        }
+        const active = document.activeElement;
+        const activeLabel = old.contains(active) ? active.getAttribute("aria-label") : null;
+        const signature = section.innerHTML + "|" + selectedAccounts.has(card.file_name) + "|" + (proxyDrafts.get(card.file_name) ?? "");
+        old.replaceChildren(...section.childNodes); section = old; old._signature = signature;
+        if (active?.isConnected && active !== document.activeElement) active.focus({preventScroll: true});
+        else if (activeLabel && !active.isConnected) Array.from(old.querySelectorAll("button,input")).find(el => el.getAttribute("aria-label") === activeLabel)?.focus({preventScroll: true});
+      } else { section._signature = section.innerHTML + "|" + selectedAccounts.has(card.file_name) + "|" + (proxyDrafts.get(card.file_name) ?? ""); grid.appendChild(section); }
+      retained.add(section.dataset.identity);
     });
-    app.appendChild(grid);
+    for (const child of Array.from(grid.children)) if (!retained.has(child.dataset.identity)) child.remove();
   }
   function loadList() {
     const generation = ++listGeneration;
@@ -757,8 +1068,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     setListStatus("");
     return request(quotaEndpoint, {}).then(result => {
       if (generation !== listGeneration) return;
+      const previousCards = cards;
       cards = Array.isArray(result.cards) ? result.cards : [];
       const configured = new Set(cards.map(card => card.key_id));
+      for (const keyID of inFlight.keys()) if (!configured.has(keyID)) inFlight.delete(keyID);
       Object.keys(cache).forEach(keyID => {
         if (!configured.has(keyID)) { delete cache[keyID]; values.delete(keyID); labels.delete(keyID); fetchedAt.delete(keyID); errors.delete(keyID); }
       });
@@ -766,7 +1079,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
         for (const keyID of map.keys()) if (!configured.has(keyID)) map.delete(keyID);
       });
       cards.forEach(card => {
-        if (card.email && !labels.has(card.key_id)) labels.set(card.key_id, card.label);
+        const previous = previousCards.find(c => c.key_id === card.key_id);
+        if (previous && cardIdentity(previous) !== cardIdentity(card)) {
+          inFlight.delete(card.key_id); errors.delete(card.key_id); labels.delete(card.key_id);
+          values.delete(card.key_id); fetchedAt.delete(card.key_id); recoveryMessages.delete(card.key_id); availabilityResults.delete(card.key_id); proxyDrafts.delete(card.file_name); selectedAccounts.delete(card.file_name);
+        }
+        const entry = cache[card.key_id];
+        if (entry && entry.identity === cardIdentity(card) && entry.usage) { values.set(card.key_id, entry.usage); fetchedAt.set(card.key_id, entry.fetched_at); }
+        else { delete cache[card.key_id]; values.delete(card.key_id); fetchedAt.delete(card.key_id); }
+        if (card.email) labels.set(card.key_id, card.label);
         if (card.usage && typeof card.usage === "object") applyUsage(card.key_id, card.usage, card.label);
         if (card.error) errors.set(card.key_id, card.error);
         else if (!inFlight.has(card.key_id)) errors.delete(card.key_id);
@@ -775,8 +1096,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
       setLegacy(result.legacy_api_keys_ignored === true);
       listReady = true;
       const missing = cards.filter(card => !card.email).filter(card => card.key_id && !inFlight.has(card.key_id));
-      missing.forEach(card => inFlight.add(card.key_id));
-      render();
+      missing.forEach(card => inFlight.set(card.key_id, cardIdentity(card)));
+      renderPool(); render();
       missing.forEach(card => refreshCard(card, true));
     }).catch(err => {
       if (generation !== listGeneration) return;
@@ -785,12 +1106,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     }).then(() => {
       if (generation !== listGeneration) return;
       listLoading = false;
-      syncReloadButton();
+      syncReloadButton(); syncProxyControls();
     });
   }
   function onSave(event) {
     event.preventDefault();
-    if (saving) return;
+    if (saving || availabilityRunning || recoveryBusy.size || bindingBusy || poolBusy) return;
     const trimmedKey = apiKeyInput.value.trim();
     if (!trimmedKey) {
       setSaveStatus("请输入 API key。", true);
@@ -822,7 +1143,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     return;
   }
   saveForm.addEventListener("submit", onSave);
-  reloadButton.addEventListener("click", () => { if (!listLoading) loadList(); });
+  reloadButton.addEventListener("click", () => { if (!reloadButton.disabled) loadList(); });
   $("proxy-reload").addEventListener("click", refreshPool);
   $("proxy-search").addEventListener("input", renderPool);
   $("proxy-lines").addEventListener("input", () => { fileGeneration++; invalidateImport(); });
@@ -856,6 +1177,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     previewAllocation(targets);
   });
   $("proxy-random").addEventListener("click", previewRandom);
+  $("proxy-balance").addEventListener("click", previewBalanced);
+  $("availability-check").addEventListener("click", runAvailabilityChecks);
+  $("availability-cancel").addEventListener("click", stopAvailability);
+  $("probe-all").addEventListener("click", () => runProxyProbes(proxies.map(p => p.id)));
+  $("probe-stop").addEventListener("click", () => { probeCancel = true; $("probe-enabled").checked = false; clearTimeout(probeTimer); });
+  ["probe-echo", "probe-type", "probe-interval"].forEach(id => $(id).addEventListener("input", () => {
+    stopProbeScheduler(); probeCancel = true; $("probe-enabled").checked = false; renderPool();
+    status("probe-status", "策略已改变，旧结果过期；请重新检测。若有在途请求，等待结束后再启动。");
+  }));
+  $("probe-enabled").addEventListener("change", () => {
+    if (!$("probe-enabled").checked) { clearTimeout(probeTimer); return; }
+    if (!validPublicEndpoint($("probe-echo").value.trim())) { $("probe-enabled").checked = false; status("probe-status", "请先配置可信 HTTPS 端点。", true); return; }
+    if (!probeRunning) runProxyProbes(proxies.map(p => p.id));
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { stopProbeScheduler(); probeCancel = true; $("probe-enabled").checked = false; }
+    renderPool();
+  });
+  window.addEventListener("pagehide", () => { stopProbeScheduler(); probeCancel = true; $("probe-enabled").checked = false; availabilityCancel = true; renderPool(); });
   $("proxy-plan-apply").addEventListener("click", () => applyAllocation(allocation));
   $("proxy-plan-cancel").addEventListener("click", cancelAllocation);
   $("proxy-retry").addEventListener("click", () => applyAllocation(failedAllocation));

@@ -12,6 +12,8 @@ The plugin owns model discovery, protocol translation, execution, and the Comman
 
 See the [ChangeLog](CHANGELOG.md) for this update and [release notes](RELEASE_NOTES.md) for detailed history.
 
+**v0.2.7** adds upstream-reset-aware cooldowns, clearer recovery diagnostics, read-only account availability checks, proxy IP/type probes with opt-in visible-page scheduling, and balanced allocation to freshly successful proxies. Replace the platform-specific plugin library, restart CPA and refresh the management page to upgrade. Proxy probes require administrator-configured trusted HTTPS endpoints; availability checks do not verify model inference or account-scoped egress.
+
 ## What the upstream actually serves
 
 CommandCode GOAT / Pro / Max is reached through its OpenAI-compatible provider surface:
@@ -205,7 +207,7 @@ Both surfaces read the same account API on the same authority as `base-url`:
 
 ### Quota cooldown and request errors (v0.2.5)
 
-Model execution checks account quota before sending the model request. The policy uses rounded remaining percentage: less than 0.5% rounds to 0% (13.98/14.00 triggers). Monthly takes priority over weekly and five-hour. Monthly cooldown ends at a valid future subscription `currentPeriodEnd`; without that date no monthly deadline is invented. Weekly/five-hour cooldowns run for seven days/five hours from first observation or failure. Repeated reads do not extend a live deadline; expiry invalidates the old snapshot and requires a fresh read. Observations are process-local and are lost on restart. Distinct API keys are tracked separately, even if owned by the same upstream account.
+Model execution checks account quota before sending the model request. The policy uses rounded remaining percentage: less than 0.5% rounds to 0% (13.98/14.00 triggers). Monthly takes priority over weekly and five-hour. Monthly cooldown ends at a valid future subscription `currentPeriodEnd`; without that date no monthly deadline is invented. New weekly/five-hour cooldowns prefer a valid future upstream `resetAt`; if it is absent or invalid, they fall back to seven days/five hours from first observation or failure. Repeated reads do not extend a live deadline; expiry invalidates the old snapshot and requires a fresh read. Observations are process-local and are lost on restart. Distinct API keys are tracked separately, even if owned by the same upstream account.
 
 Healthy results cache for 60 seconds and retrieval failures for 10 seconds. Execution preflight has a five-second budget, skips identity lookup and allows model execution if retrieval fails without an active cooldown. Manual quota refresh continues retrieving full cards and recording observations, but it cannot directly pause CPA routing: the next executor refusal reports credential-scoped 429. Unlimited/zero-cap windows and available purchased monthly credits are protected. CPA's minimum or retained longer cooldown may delay recovery beyond the plugin deadline; this is temporary availability, not `disabled: true`. Quota requests still use host default egress, not the account proxy.
 
@@ -219,6 +221,8 @@ For **existing CPA cooldowns**, open Management Center → CommandCode → the a
 
 The current host resets the account and **all model cooldowns**, with no conditional atomic check. Restrictions arriving after the checks can also be cleared. This is an explicitly confirmed admin operation, not a guarantee of selective/concurrent recovery. It neither changes auth files nor enables disabled accounts nor replenishes upstream quota. Confirmation tickets are single-use and expire in two minutes. Timeout means the result may be unknown: inspect host state before retrying; no automatic retry occurs. Missing host callbacks yield an error rather than a false success. Real CPA 8.0.69, local mocks and browser tests verify actual routing recovery.
 
+Upstream reset, plugin policy deadline and CPA-retained cooldown are distinct states; timezone formatting does not synchronize them. Backend collection timestamps include local timezone and UTC details. Unknown standard quota buckets are omitted with an unknown-data description, not rendered as zero or unlimited. Recovery rejection exposes structured reasons such as `quota_exhausted` with a blocking window, `incomplete_evidence`, `subscription_invalid`, `credentials_rejected`, `network_failure` and `runtime_unavailable`. Weekly 34.84/35 still rounds to 0% remaining, so refusing recovery is intentional protection.
+
 ### Account proxy pool
 
 Open **CommandCode accounts and quota → Proxy pool and account egress**. This feature requires the host's v8 configuration API with ETag support and its auth-file field PATCH API; it has been integration-tested with CPA 8.0.69. Older hosts can keep using account and quota features, but proxy-pool management is disabled when the required APIs are unavailable.
@@ -226,12 +230,26 @@ Open **CommandCode accounts and quota → Proxy pool and account egress**. This 
 - Paste proxies or upload a UTF-8 text file, one URI per line. Supported schemes are `http`, `https`, `socks5` and `socks5h`, with an explicit port. Examples: `http://proxy.example:8080`, `socks5h://user:password@proxy.example:1080`, `socks5://[2001:db8::1]:1080`. Percent-encode reserved characters in credentials. Bare `host:port` requires selecting its protocol first; ambiguous colon-separated credential formats are not guessed.
 - Preview validates syntax, marks duplicate/error lines, and masks credentials. **Import valid entries** saves valid rows only; it is not a connection or egress test. Each entry gets a stable random `px_…` ID. You can search, rename labels and delete unreferenced proxies. To change an address, create another entry, migrate accounts and then delete the old one.
 - Choose a proxy on an account card or select accounts for a batch operation. **Randomly assign unbound accounts** only fills accounts without a pool binding or an externally configured proxy. If accounts are selected, the random operation is limited to them. Proxies may be shared. Review the generated mapping before confirming; retries keep the same mapping rather than drawing again.
+- Non-billed availability checks process accounts individually with concurrency 3 and cancellation. Counts distinguish available, unavailable, unknown and disabled. Subscription, quota and host runtime evidence are read-only; this does not verify model inference or account egress.
+- Egress probes are off by default. Configure a trusted HTTPS IP echo endpoint and optional classification endpoint; the authenticated page sends fixed GET requests through the host management `api-call` with an explicit proxy. No public service is selected automatically, and no account key, email or management token is sent to the probe target. Results include IP, type, source and time; classification failure leaves a successful connectivity observation intact.
+- Manual or open-page scheduling (off by default, five-minute interval, concurrency 2, no overlapping rounds) stops on hidden/closed pages. Observations expire after ten minutes; only fresh success with matching proxy URL and policy can be an allocation candidate. Host redirects, transport fallbacks and resource limits remain relevant: a successful endpoint probe is not model availability or fail-closed isolation.
+- **Randomly balance all accounts across available proxies** targets this plugin's accounts only, defaults to enabled accounts and protects external/unknown bindings unless explicitly overridden. Fully successful target allocations differ by at most one account per candidate. Partial failure may temporarily be uneven; retry keeps the original mapping.
 - Bindings save `commandcode_proxy_id` and native `proxy_url` together in each auth file via a narrow PATCH. Unbinding removes the ID and writes `proxy_url: ""`, which inherits host defaults; this is **not forced direct access**. Existing proxies without a pool ID are shown as external settings and are not automatically replaced.
 - The directory lives under `plugins.configs.commandcode-or-or-cliproxyapi.proxy-pool` as `schema-version: 1` and `proxies: [{id, label, url}]`. ETag/If-Match protects directory saves from stale writes. Account files are the only binding record. Changes across several accounts are not one transaction: the page reports success, failure or unknown results and reads settings back before retry. The host's auth PATCH has no compare-and-swap for the same fields, so cross-page edits can still race.
 
 **Egress boundary:** model execution and streaming inherit CPA's selected-account transport through `host_callback_id`. Native-host tests confirmed distinct HTTP and SOCKS5 exits with no global proxy; a global proxy can override this transport. CPA also permits fallback for invalid proxy setup, so the plugin cannot promise fail-closed isolation. Quota queries, new-key verification and background model discovery continue using host defaults, not the selected account's proxy. Saving a binding does not verify connectivity, public IP, proxy health or SOCKS5/SOCKS5H DNS semantics.
 
 **Credential storage:** authenticated proxy URIs are stored in plaintext in CPA's configuration and auth files and are read by the authenticated management page. Lists mask userinfo, and the page does not persist proxy credentials in localStorage/sessionStorage. Protect those server files and your management access. Delete/reference checks cannot provide a transaction across the directory and all auth files; another administrator can create a dangling ID concurrently, which is shown as a mismatch rather than automatically removing the saved proxy URL.
+
+**Probe endpoint contract:** configure HTTPS URLs without userinfo, query or fragment. Policy and observations live only in page memory and do not survive reload. Echo must return `{"ip":"203.0.113.7"}`. The optional classifier receives an appended `?ip=203.0.113.7`, for example returning:
+
+```json
+{"ip":"203.0.113.7","type":"hosting","asn":"AS64500","organization":"Example network","source":"your classifier"}
+```
+
+Allowed types are `hosting`, `isp`, `residential`, `mobile` and `unknown`; the IP must match the echo. ASN names do not infer residential status. These IP/ASN values are documentation examples only. Failed or mismatched classification leaves connectivity successful and type unknown. Do not embed probe tokens in endpoint URLs.
+
+**Host probe limits:** management `api-call` follows redirects, has a fixed 60-second timeout and no response-body size cap; certain proxy setup errors may fall back. Browser cancellation/timeout does not guarantee host or SOCKS work has stopped. Unknown operations are not automatically retried. Use small controlled echo services. Hiding the page disables scheduling and invalidates old candidates; explicitly re-enable after returning. This is not server-side monitoring.
 
 ### Reasoning effort
 
@@ -272,13 +290,13 @@ CPA_PLUGIN_LIBRARY=/absolute/path/to/commandcode-or-or-cliproxyapi.dylib \
 node tests/oauth_host.cjs
 ```
 
-Proxy-pool browser fixtures cover import preview, redaction, ETag conflicts, unbound-only random allocation, fixed retry targets, partial writes and mobile/dark layouts:
+Proxy-pool browser fixtures cover import/redaction/ETag, fixed retry targets, partial writes, availability concurrency/cancellation, probe classification/expiry/scheduling/hidden-page stale responses, balanced allocation/external-binding protection and mobile/dark layouts:
 
 ```bash
 npx --yes -p playwright -c 'NODE_PATH=$(dirname $(dirname $(command -v playwright))) node tests/proxy_pool_page.cjs'
 ```
 
-The native proxy-pool test creates two HTTP proxies and a restricted SOCKS5 mock. With the same `CPA_HOST_BINARY` and `CPA_PLUGIN_LIBRARY` environment variables, run `node tests/proxy_pool_host.cjs`. Set `CPA_BROWSER=1` to include real-page account binding. All upstream requests and proxy endpoints are local mocks.
+The native proxy-pool test creates two HTTP proxies and a restricted SOCKS5 mock. With the same `CPA_HOST_BINARY` and `CPA_PLUGIN_LIBRARY` environment variables, run `node tests/proxy_pool_host.cjs`. Set `CPA_BROWSER=1` to include real-page account binding. Optionally set `CPA_TLS_PROBE=1` and `CPA_TEST_OPENSSL` to verify that HTTPS CONNECT establishes a tunnel but a temporary self-signed certificate is still rejected. This case installs no system CA and does not cover a successful trusted HTTPS echo. All upstream requests and proxy endpoints are local mocks.
 
 Set `CPA_BROWSER=1` and provide Playwright as above to drive the real guide too. Use `.so` on Linux, `.dylib` on macOS or `.dll` on Windows.
 

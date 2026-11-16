@@ -65,6 +65,32 @@ func TestDisplayedQuotaExhaustionUsesRoundedRemainingPercent(t *testing.T) {
 }
 
 func TestQuotaCooldownPriorityAndDeadlinesDoNotSlide(t *testing.T) {
+	for _, test := range []struct {
+		window   int
+		reset    string
+		fallback time.Duration
+		source   string
+	}{{1, "", 7 * 24 * time.Hour, "observation_fallback"}, {1, "2099-01-01T00:00:00Z", 0, "upstream_reset"}, {2, "", 5 * time.Hour, "observation_fallback"}, {2, "2099-01-01T00:00:00Z", 0, "upstream_reset"}} {
+		q := newQuotaCooldownManager(func(context.Context, string, string, bool) (quotaSnapshot, error) {
+			s := healthyQuotaSnapshot()
+			if test.window == 1 {
+				s.usage.Weekly.Used = 35
+				s.usage.Weekly.ResetsAt = test.reset
+			} else {
+				s.usage.FiveHour.Used = 14
+				s.usage.FiveHour.ResetsAt = test.reset
+			}
+			return s, nil
+		})
+		loadQuotaTest(t, q)
+		q.mu.Lock()
+		entry := q.entries[quotaStateKey("base", "key")]
+		got, source := entry.deadlines[test.window].Sub(entry.fetched), entry.sources[test.window]
+		q.mu.Unlock()
+		if source != test.source || test.fallback > 0 && (got < test.fallback-time.Second || got > test.fallback+time.Second) || test.fallback == 0 && got < 24*time.Hour {
+			t.Fatalf("window=%d reset=%q duration=%s source=%s", test.window, test.reset, got, source)
+		}
+	}
 	s := healthyQuotaSnapshot()
 	q := newQuotaCooldownManager(func(context.Context, string, string, bool) (quotaSnapshot, error) { return cloneQuotaSnapshot(s), nil })
 	clock := cooldownTestClock(q)
@@ -96,6 +122,58 @@ func TestQuotaCooldownPriorityAndDeadlinesDoNotSlide(t *testing.T) {
 	assertCooldown(t, q.cooldown("base", "key"), 20*86400-7200, "monthly")
 	if q.cooldown("other-base", "key") != nil || q.cooldown("base", "other-key") != nil {
 		t.Fatal("credential/base state leaked")
+	}
+}
+
+func TestQuotaDeadlinePrefersValidUpstreamResetAndFallsBackForRollingWindows(t *testing.T) {
+	now := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+	anchor := now.Add(-time.Minute)
+	future := now.Add(3 * time.Hour).Format(time.RFC3339)
+	for _, tc := range []struct {
+		window int
+		reset  string
+		want   time.Time
+		source string
+	}{
+		{1, future, now.Add(3 * time.Hour), "upstream_reset"},
+		{2, future, now.Add(3 * time.Hour), "upstream_reset"},
+		{1, "", anchor.Add(7 * 24 * time.Hour), "observation_fallback"},
+		{2, "invalid", anchor.Add(5 * time.Hour), "observation_fallback"},
+		{1, now.Add(-time.Hour).Format(time.RFC3339), anchor.Add(7 * 24 * time.Hour), "observation_fallback"},
+		{0, "", time.Time{}, ""},
+		{0, future, now.Add(3 * time.Hour), "subscription_end"},
+	} {
+		got, source := quotaDeadline(tc.window, tc.reset, anchor, now)
+		if !got.Equal(tc.want) || source != tc.source {
+			t.Fatalf("window=%d reset=%q got=(%s,%s) want=(%s,%s)", tc.window, tc.reset, got, source, tc.want, tc.source)
+		}
+	}
+}
+
+func TestQuotaCooldownUnknownExhaustedDoesNotCreateDeadline(t *testing.T) {
+	s := healthyQuotaSnapshot()
+	s.usage.Weekly = quotaWindow{Used: 35, Cap: 35, Status: "exceeded", unknown: true}
+	q := newQuotaCooldownManager(func(context.Context, string, string, bool) (quotaSnapshot, error) { return s, nil })
+	cooldownTestClock(q)
+	loadQuotaTest(t, q)
+	if got := q.cooldown("base", "key"); got != nil {
+		t.Fatalf("unknown window created cooldown: %+v", got)
+	}
+}
+
+func TestQuotaCooldownDiagnosticsReportDeadlineSource(t *testing.T) {
+	s := healthyQuotaSnapshot()
+	s.usage.Weekly.Used = 35
+	s.usage.Weekly.ResetsAt = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	q := newQuotaCooldownManager(func(context.Context, string, string, bool) (quotaSnapshot, error) { return s, nil })
+	cooldownTestClock(q)
+	loadQuotaTest(t, q)
+	got := q.diagnostic("base", "key")
+	if !got.Active || got.Window != "weekly" || got.Source != "upstream_reset" || got.Until != "2026-11-15T09:00:00Z" {
+		t.Fatalf("diagnostic=%+v", got)
+	}
+	if q.diagnostic("other", "key").Active {
+		t.Fatal("diagnostic crossed credentials")
 	}
 }
 

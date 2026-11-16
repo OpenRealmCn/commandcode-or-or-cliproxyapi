@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/tidwall/gjson"
 
+	"commandcode-or-or-cliproxyapi/internal/errclass"
 	"commandcode-or-or-cliproxyapi/resources"
 )
 
@@ -34,6 +35,7 @@ const (
 // quotaWindow is one rate-limit window as rendered by the page.
 type quotaWindow struct {
 	unknown  bool    // 上游缺少健康判定字段。
+	Known    bool    `json:"known"`
 	Status   string  `json:"status"`
 	Percent  int     `json:"percent"`
 	Used     float64 `json:"used"`
@@ -43,12 +45,16 @@ type quotaWindow struct {
 
 // quotaUsage is one credential's account snapshot.
 type quotaUsage struct {
-	recoveryVerified bool
-	RecoveryNotice   string  `json:"recovery_notice,omitempty"`
-	Plan             string  `json:"plan,omitempty"`
-	PlanCredits      float64 `json:"plan_credits,omitempty"`
-	CreditsLeft      float64 `json:"credits_left"`
-	PurchasedCredits float64 `json:"purchased_credits,omitempty"`
+	recoveryVerified  bool
+	BalancesKnown     bool                    `json:"balances_known"`
+	SubscriptionState string                  `json:"subscription_state"`
+	SubscriptionError *accountProbeError      `json:"subscription_error,omitempty"`
+	LocalCooldown     quotaCooldownDiagnostic `json:"local_cooldown"`
+	RecoveryNotice    string                  `json:"recovery_notice,omitempty"`
+	Plan              string                  `json:"plan,omitempty"`
+	PlanCredits       float64                 `json:"plan_credits,omitempty"`
+	CreditsLeft       float64                 `json:"credits_left"`
+	PurchasedCredits  float64                 `json:"purchased_credits,omitempty"`
 	// Month is the monthly plan allowance rendered as a window so the page can
 	// meter it like the two rate-limit windows. ResetsAt is the subscription
 	// currentPeriodEnd (the plan's renewal / expiry instant). The window is
@@ -61,6 +67,8 @@ type quotaUsage struct {
 }
 
 type quotaCard struct {
+	Unavailable      bool        `json:"unavailable"`
+	StatusMessage    string      `json:"status_message,omitempty"`
 	KeyID            string      `json:"key_id"`
 	AuthID           string      `json:"auth_id,omitempty"`
 	Label            string      `json:"label"`
@@ -191,7 +199,7 @@ func accountCard(entry pluginapi.HostAuthFileEntry) quotaCard {
 		label = entry.Name
 	}
 	return quotaCard{KeyID: entry.AuthIndex, AuthID: entry.ID, Label: label, Email: entry.Email, FileName: entry.Name,
-		Disabled: entry.Disabled || entry.Status == "disabled", Status: entry.Status}
+		Disabled: entry.Disabled || entry.Status == "disabled", Status: entry.Status, Unavailable: entry.Unavailable, StatusMessage: errclass.Redact(entry.StatusMessage)}
 }
 
 func (m *Manager) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
@@ -209,6 +217,12 @@ func (m *Manager) HandleManagement(ctx context.Context, req pluginapi.Management
 	}
 	ctx, cancel := context.WithTimeout(ctx, quotaMaxTimeout)
 	defer cancel()
+	if req.Path == "/v0/management/plugins/"+pluginName+"/account-availability" {
+		return m.handleAccountAvailability(ctx, req.Body)
+	}
+	if req.Path == "/v0/management/plugins/"+pluginName+"/account-details" {
+		return m.handleAccountDetails(ctx, req.Body)
+	}
 	if req.Path == "/v0/management/plugins/"+pluginName+"/cooldown-recovery" {
 		return m.handleCooldownRecovery(ctx, req.Body)
 	}
@@ -346,10 +360,10 @@ func fetchQuotaRaw(ctx context.Context, bridge *HostBridge, baseURL string, time
 			},
 		})
 		if errDo != nil {
-			return nil, fmt.Errorf("account request failed")
+			return nil, newAccountProbeError(path, 0, nil)
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("account request rejected (%d)", resp.StatusCode)
+			return nil, newAccountProbeError(path, resp.StatusCode, resp.Headers)
 		}
 		return resp.Body, nil
 	}
@@ -369,7 +383,6 @@ func fetchQuotaRaw(ctx context.Context, bridge *HostBridge, baseURL string, time
 		PurchasedCredits: credits.Credits.PurchasedCredits,
 		FiveHour:         windowFromAccount(credits.WindowLimits.FiveHour, credits.WindowLimits.Limited),
 		Weekly:           windowFromAccount(credits.WindowLimits.Weekly, credits.WindowLimits.Limited),
-		RefreshedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 
 	// JSON 零值不证明健康；部分数据可以展示，但不得据此解锁。
@@ -378,31 +391,48 @@ func fetchQuotaRaw(ctx context.Context, bridge *HostBridge, baseURL string, time
 	validFlag := func(path string) bool { v := root.Get(path); return v.Type == gjson.True || v.Type == gjson.False }
 	for path, w := range map[string]*quotaWindow{"fiveHour": &usage.FiveHour, "weekly": &usage.Weekly} {
 		w.unknown = !validFlag("windowLimits.limited") || !validNumber("windowLimits."+path+".used") || !validNumber("windowLimits."+path+".cap")
+		w.Known = !w.unknown
 	}
 	balancesKnown := validNumber("credits.monthlyCredits") && validNumber("credits.purchasedCredits")
+	usage.BalancesKnown = balancesKnown
 	label := ""
 	email := ""
 	periodEnd := ""
 	subscriptionHealthy := false
+	usage.SubscriptionState = "unknown"
 	if raw, errSub := get(accountSubscriptionPath); errSub == nil {
 		var sub accountSubscription
 		if json.Unmarshal(raw, &sub) == nil && sub.Success {
 			periodEnd = sub.Data.CurrentPeriodEnd
+			if sub.Data.Status == "active" {
+				usage.SubscriptionState = "active"
+			} else if sub.Data.Status != "" {
+				usage.SubscriptionState = "inactive"
+			}
 			end, parseErr := time.Parse(time.RFC3339, periodEndRFC3339(periodEnd))
 			subscriptionHealthy = sub.Data.Status == "active" && parseErr == nil && end.After(time.Now())
+			if sub.Data.Status == "active" && parseErr == nil && !end.After(time.Now()) {
+				usage.SubscriptionState = "expired"
+			}
 			if name, allowance := planFor(sub.Data.PlanID); name != "" {
 				usage.Plan = name
 				usage.PlanCredits = allowance
 			}
+		} else {
+			usage.SubscriptionError = &accountProbeError{Phase: "subscriptions", Code: "invalid_response", HTTPStatus: http.StatusOK, Retryable: true}
 		}
+	} else {
+		usage.SubscriptionError = probeError(errSub, "subscriptions")
 	}
 	usage.Month = monthWindow(usage.PlanCredits, usage.CreditsLeft, usage.PurchasedCredits)
 	if usage.Month != nil {
 		usage.Month.ResetsAt = periodEndRFC3339(periodEnd)
 		usage.Month.unknown = !balancesKnown || !subscriptionHealthy
+		usage.Month.Known = !usage.Month.unknown
 	}
 	usage.recoveryVerified = balancesKnown && subscriptionHealthy && usage.Month != nil
 	if !identity {
+		usage.RefreshedAt = time.Now().UTC().Format(time.RFC3339)
 		return usage, label, email, nil
 	}
 	if raw, errWho := get(accountWhoamiPath); errWho == nil {
@@ -415,6 +445,7 @@ func fetchQuotaRaw(ctx context.Context, bridge *HostBridge, baseURL string, time
 			}
 		}
 	}
+	usage.RefreshedAt = time.Now().UTC().Format(time.RFC3339)
 	return usage, label, email, nil
 }
 
@@ -438,7 +469,7 @@ func monthWindow(planCredits, creditsLeft, purchased float64) *quotaWindow {
 	if used < 0 {
 		used = 0
 	}
-	out := quotaWindow{Used: used, Cap: pool, Status: "ok"}
+	out := quotaWindow{Known: true, Used: used, Cap: pool, Status: "ok"}
 	if remaining <= 0 {
 		out.Status = "exceeded"
 	}
@@ -477,7 +508,7 @@ func periodEndRFC3339(raw string) string {
 }
 
 func windowFromAccount(w accountWindow, limited bool) quotaWindow {
-	out := quotaWindow{Used: w.Used, Cap: w.Cap, Status: "ok"}
+	out := quotaWindow{Known: true, Used: w.Used, Cap: w.Cap, Status: "ok"}
 	switch {
 	case w.Exceeded:
 		out.Status = "exceeded"

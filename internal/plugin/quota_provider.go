@@ -118,16 +118,36 @@ func (m *Manager) authEntryByIndex(ctx context.Context, authIndex string) (plugi
 // label there; the row label comes from the description instead.
 func quotaResponseFromUsage(usage quotaUsage) pluginapi.QuotaFetchResponse {
 	buckets := make([]pluginapi.QuotaBucket, 0, 3)
-	if usage.Month != nil {
+	if usage.Month != nil && !usage.Month.unknown {
 		buckets = append(buckets, quotaBucket("monthly", "Monthly credits", *usage.Month))
 	}
-	buckets = append(buckets,
-		quotaBucket("five_hour", "5-hour window", usage.FiveHour),
-		quotaBucket("weekly", "Weekly window", usage.Weekly),
-	)
+	for _, item := range []struct {
+		window, label string
+		value         quotaWindow
+	}{
+		{"five_hour", "5-hour window", usage.FiveHour}, {"weekly", "Weekly window", usage.Weekly},
+	} {
+		if !item.value.unknown {
+			buckets = append(buckets, quotaBucket(item.window, item.label, item.value))
+		}
+	}
+	// The host requires a numeric ratio; omit unknown buckets instead of inventing
+	// a full/empty balance. Keep their status in the existing group description.
+	name := "CommandCode"
+	for _, item := range []struct {
+		label string
+		value *quotaWindow
+	}{{"Monthly", usage.Month}, {"Weekly", &usage.Weekly}, {"5-hour", &usage.FiveHour}} {
+		if item.value == nil || item.value.unknown {
+			name += " · " + item.label + " 数据未知"
+		}
+	}
+	if d := usage.LocalCooldown; d.Active {
+		name += " · 插件策略截止 " + d.Window + " " + d.Until + "（" + d.Source + "）；宿主冷却请另行核对"
+	}
 	resp := pluginapi.QuotaFetchResponse{
 		Subscription: quotaSubscription(usage),
-		Groups:       []pluginapi.QuotaGroup{{DisplayName: "CommandCode", Buckets: buckets}},
+		Groups:       []pluginapi.QuotaGroup{{DisplayName: name, Buckets: buckets}},
 	}
 	// Surface exhaustion as a summary metric rather than an error: the card
 	// stays readable, the named limit appears beside the plan, and the buckets

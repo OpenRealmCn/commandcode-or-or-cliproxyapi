@@ -12,8 +12,11 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const oldProxy = {id:'px_'+'1'.repeat(32),label:'已有代理',url:'http://old.example:8080'};
 let pool = {'schema-version':1,proxies:[oldProxy]};
 let revision = 1, conflict = false, puts = 0, failPatch = '', uncertainPatch = '', fieldSupport = true;
-let unknownAccount = false, withGlobal = false;
+let unknownAccount = false, withGlobal = false, probeCalls = [], availabilityCalls = [];
+let probeGate = false, probeStarted, pendingProbes = [];
 const patches = [];
+let availabilityGate = null, availabilityStarted;
+const pendingAvailability = [];
 const defaults = {proxy_id:'',proxy_configured:false,proxy_read_error:false,proxy_url_hash:'',proxy_display:''};
 let cards = [
   {...defaults,key_id:'a',file_name:'a.json',label:'a@example.test',email:'a@example.test'},
@@ -55,8 +58,24 @@ const server = http.createServer(async(req,res)=>{
   }
   if(req.url===baseConfig)return reply({enabled:true},200,true);
   if(req.url.endsWith('/proxy-pool/validate'))return reply(validate(body));
+  if(req.url==='/v0/management/api-call') {
+    probeCalls.push(body);
+    if(!['GET'].includes(body.method)||body.header?.Accept!=='application/json'||body.auth_index||body.url.includes('proxy-test-password'))return reply({error:'unsafe probe payload'},400);
+    if(body.url.startsWith('https://echo.example.test/')){
+      if(probeGate)await new Promise(resolve=>{pendingProbes.push(resolve);if(pendingProbes.length===2)probeStarted();});
+      return reply({status_code:200,body:JSON.stringify({ip:'203.0.113.7'})});
+    }
+    if(body.url.startsWith('https://type.example.test/'))return reply({status_code:200,body:JSON.stringify({ip:body.url.includes('/mismatch')?'203.0.113.8':'203.0.113.7',type:'isp',asn:'AS64500',organization:'ISP test',source:'local mock'})});
+    return reply({error:'unknown probe target'},400);
+  }
+  if(req.url.endsWith('/account-availability')) {
+    availabilityCalls.push(body);
+    if(availabilityGate)await new Promise(resolve=>{pendingAvailability.push(resolve);if(pendingAvailability.length===3)availabilityStarted();});
+    return reply({key_id:body.key_id,auth_id:'stable-'+body.key_id,state:'available',reason_codes:[],checked_at:new Date().toISOString(),subscription:'active',quota:'healthy',runtime:'clear',model_verified:false,account_egress_verified:false});
+  }
+  if(req.url.endsWith('/account-details')) {const c=cards.find(c=>c.key_id===body.key_id);return c?reply({...c,auth_id:'stable-'+c.key_id}):reply({},404);}
+  if(req.url.endsWith('/quota-usage'))return reply({cards:cards.map(c=>({...c,auth_id:'stable-'+c.key_id,proxy_read_error:unknownAccount||c.proxy_read_error}))});
   if(req.url==='/v0/management/proxy-url')return reply({'proxy-url':withGlobal?'http://global-secret-user:global-secret-pass@proxy:80':''});
-  if(req.url.endsWith('/quota-usage'))return reply({cards:cards.map(c=>({...c,proxy_read_error:unknownAccount||c.proxy_read_error}))});
   if(req.url==='/v0/management/auth-files/fields') {
     if(!fieldSupport)return reply({},405);
     patches.push({...body});
@@ -105,7 +124,7 @@ const server = http.createServer(async(req,res)=>{
     assert.equal(patches.some(p=>['c.json','d.json'].includes(p.name)),false);
     await page.locator('#proxy-retry').click();
     await page.waitForFunction(()=>document.querySelector('#proxy-bind-status').textContent.includes('失败或未知 0'));
-    assert.equal(patches.length,3);assert.deepEqual({name:patches[2].name,id:patches[2].commandcode_proxy_id,url:patches[2].proxy_url},mapping[1]);
+    assert.equal(patches.length,3);assert.deepEqual({name:patches[2].name,id:patches[2].commandcode_proxy_id,url:patches[2].proxy_url},mapping.find(item=>item.name==='b.json'));
     // 保存后返回 500 的结果回读成功，不能再次随机或重复 PATCH。
     await page.locator('.quota-card').nth(0).locator('select').selectOption('');
     await page.locator('.quota-card').nth(0).getByRole('button',{name:'预览代理设置'}).click();
@@ -141,6 +160,100 @@ const server = http.createServer(async(req,res)=>{
     for(const button of await page.locator('#proxy-items button').filter({hasText:'删除'}).all())assert.equal(await button.isDisabled(),true);
     unknownAccount=false;withGlobal=true;
     await reload();assert.match(await page.locator('#proxy-global').innerText(),/存在全局代理/);assert.equal((await page.locator('#proxy-global').innerText()).includes('global-secret-pass'),false);
+    await page.locator('#probe-echo').fill('https://echo.example.test/ip');
+    await page.locator('#probe-type').fill('https://type.example.test/lookup');
+    await page.locator('#probe-all').click();
+    await page.waitForFunction(()=>document.querySelector('#probe-stop').disabled&&document.querySelector('#proxy-items').innerText.includes('203.0.113.7'));
+    assert.equal(probeCalls.length,4);
+    for(const call of probeCalls){
+      assert.deepEqual(Object.keys(call).sort(),['header','method','proxy_url','url']);
+      assert.deepEqual(call.header,{Accept:'application/json'});
+      assert.equal(call.method,'GET');
+      assert.ok(pool.proxies.some(p=>p.url===call.proxy_url));
+      assert.doesNotMatch(call.url,/proxy-test-password|proxy-test-management|\$TOKEN\$/);
+    }
+    assert.match(await page.locator('#proxy-items').innerText(),/ISP IP/);
+    await page.locator('#probe-interval').fill('2');
+    await page.waitForFunction(()=>document.querySelector('#proxy-items').innerText.includes('已过期'));
+    assert.equal(await page.locator('#proxy-balance').isDisabled(),true);
+    await page.locator('#probe-all').click();
+    await page.waitForFunction(()=>document.querySelector('#probe-stop').disabled&&document.querySelector('#proxy-items').innerText.includes('本次探测成功'));
+    const started=new Promise(resolve=>{availabilityStarted=resolve;});
+    availabilityGate=true;availabilityCalls.length=0;
+    await page.locator('#availability-check').click();
+    await started;
+    await page.locator('#availability-cancel').click();
+    for(const release of pendingAvailability.splice(0))release();
+    await page.waitForFunction(()=>document.querySelector('#availability-status').textContent.includes('已停止派发新检测'));
+    assert.equal(availabilityCalls.length,3,'cancel must stop dispatching queued accounts');
+    assert.match(await page.locator('#availability-status').innerText(),/可用 3/);
+    assert.match(await page.locator('#availability-status').innerText(),/未知 1/);
+    availabilityGate=false;availabilityCalls.length=0;
+    await page.locator('#availability-check').click();
+    await page.waitForFunction(()=>document.querySelector('#availability-status').textContent.includes('可用 4'));
+    assert.equal(availabilityCalls.length,4);
+    assert.match(await page.locator('#availability-status').innerText(),/未知 0/);
+    // 前面的并发修改已将 a 设为外部绑定，因此此轮只均分 b/c，保护 a/d。
+    await page.locator('#proxy-balance').click();
+    const balanced=await page.locator('#proxy-plan-list').innerText();
+    for(const name of ['b.json','c.json'])assert.ok(balanced.includes(name));
+    assert.doesNotMatch(balanced,/a\.json|d\.json/);
+    const protectedBindings=cards.filter(c=>['a','d'].includes(c.key_id)).map(c=>({...c}));
+    const beforeBalanced=patches.length;
+    await page.locator('#proxy-plan-apply').click();
+    await page.waitForFunction(()=>document.querySelector('#proxy-bind-status').textContent.includes('失败或未知 0')&&document.querySelector('#proxy-plan').hidden);
+    assert.ok(patches.length-beforeBalanced<=2);
+    assert.ok(patches.slice(beforeBalanced).every(p=>['b.json','c.json'].includes(p.name)));
+    const eligible=cards.filter(c=>['b','c'].includes(c.key_id));
+    assert.ok(eligible.every(c=>pool.proxies.some(p=>p.id===c.proxy_id&&hash(p.url)===c.proxy_url_hash)));
+    const loads=pool.proxies.map(p=>eligible.filter(c=>c.proxy_id===p.id).length);
+    assert.ok(Math.max(...loads)-Math.min(...loads)<=1);
+    assert.deepEqual(cards.filter(c=>['a','d'].includes(c.key_id)),protectedBindings);
+    // 可控时钟验证默认不调度、显式启用、停用以及新鲜度自动过期。
+    await page.clock.install();
+    const initially=probeCalls.length;
+    assert.equal(await page.locator('#probe-enabled').isChecked(),false);
+    await page.clock.fastForward(180000);
+    assert.equal(probeCalls.length,initially);
+    await page.locator('#probe-enabled').check();
+    await page.waitForFunction(()=>document.querySelector('#probe-stop').disabled);
+    const afterImmediate=probeCalls.length;
+    assert.equal(afterImmediate-initially,4);
+    await page.clock.fastForward(180000);
+    await page.waitForFunction(()=>document.querySelector('#probe-stop').disabled);
+    assert.equal(probeCalls.length-afterImmediate,4);
+    await page.locator('#probe-enabled').uncheck();
+    const afterStop=probeCalls.length;
+    await page.clock.fastForward(660000);
+    assert.equal(probeCalls.length,afterStop);
+    assert.match(await page.locator('#proxy-items').innerText(),/已过期/);
+    assert.equal(await page.locator('#proxy-balance').isDisabled(),true);
+    // 分类 IP 不匹配不得标为 ISP，但也不能推翻有效回显的连通结果。
+    await page.locator('#probe-type').fill('https://type.example.test/mismatch');
+    await page.locator('#probe-all').click();
+    await page.waitForFunction(()=>document.querySelector('#probe-stop').disabled);
+    assert.match(await page.locator('#proxy-items').innerText(),/本次探测成功.*类型未知/);
+    assert.doesNotMatch(await page.locator('#proxy-items').innerText(),/ISP IP/);
+    // 隐藏时使在途代际失效，迟到回包不能恢复候选；重新显示不自动联网。
+    probeGate=true;
+    const probesStarted=new Promise(resolve=>{probeStarted=resolve;});
+    await page.locator('#probe-enabled').check();
+    await probesStarted;
+    await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
+    probeGate=false;
+    for(const release of pendingProbes.splice(0))release();
+    await page.waitForFunction(()=>document.querySelector('#probe-stop').disabled);
+    await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
+    assert.equal(await page.locator('#probe-enabled').isChecked(),false);
+    assert.equal(await page.locator('#proxy-balance').isDisabled(),true);
+    assert.doesNotMatch(await page.locator('#proxy-items').innerText(),/本次探测成功/);
+    const afterHidden=probeCalls.length;
+    await page.clock.fastForward(180000);
+    assert.equal(probeCalls.length,afterHidden);
+    await page.locator('#probe-all').click();
+    await page.waitForFunction(()=>document.querySelector('#probe-stop').disabled);
+    await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+    assert.equal(await page.locator('#proxy-balance').isDisabled(),true);
     if(process.env.CPA_PROXY_SCREENSHOTS){
       fs.mkdirSync(process.env.CPA_PROXY_SCREENSHOTS,{recursive:true});
       await page.screenshot({path:path.join(process.env.CPA_PROXY_SCREENSHOTS,'proxy-pool-desktop.png'),fullPage:true});
@@ -158,6 +271,6 @@ const server = http.createServer(async(req,res)=>{
     fieldSupport=false;const target=page.locator('.quota-card').nth(0);await target.locator('select').selectOption(pool.proxies[0].id);await target.getByRole('button',{name:'预览代理设置'}).click();await page.locator('#proxy-plan-apply').click();
     await page.waitForFunction(()=>document.querySelector('#proxy-results').textContent.includes('宿主接口不支持'));
     assert.deepEqual(errors,[]);
-    console.log('PASS: proxy import/duplicates/redaction, CAS conflict, random unbound-only, partial retry fixed mapping, uncertain readback, stale binding guard, native empty-string unbind, external and unknown states, first creation, missing fields API, mobile/dark theme. PUTs='+puts);
+    console.log('PASS: proxy import/duplicates/redaction, CAS conflict, random unbound-only, partial retry fixed mapping, uncertain readback, stale binding guard, native empty-string unbind, probe expiry/redaction/type, availability cancellation/summary, fresh-probe balanced allocation, external and unknown states, first creation, missing fields API, mobile/dark theme. PUTs='+puts);
   }finally{if(browser)await browser.close();server.closeAllConnections();await new Promise(r=>server.close(r));}
 })().catch(e=>{console.error(e);process.exitCode=1;});

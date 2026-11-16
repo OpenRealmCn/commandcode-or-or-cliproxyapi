@@ -2,6 +2,32 @@
 
 User-facing change summary: [ChangeLog](CHANGELOG.md). Supported plans: **CommandCode GOAT / Pro / Max**, not CommandCode Go.
 
+## v0.2.7 — Quota timing, account checks and proxy probes (2026-11-17)
+
+**中文**
+
+- 新建周/5-hour 插件冷却优先采用有效未来上游 `resetAt`，缺失或无效时才回退首次观察/失败 +7 天/+5 小时；月度仍使用有效订阅 `currentPeriodEnd`。重复观察不滑动活动期限，分别展示上游重置、插件策略截止和 CPA 保留状态。
+- 改进恢复兼容与拒绝诊断，显示阻塞窗口和最新额度；Weekly 34.84/35 按整数剩余 0% 仍拒绝恢复。继续要求新鲜完整健康证据、稳定身份复核及明确确认；宿主接口会清除账号及所有模型冷却，没有 CAS，超时未知不自动重试。
+- 新增只读全账号非扣费可用性检测，最多并发 3，可取消并汇总可用/不可用/未知/禁用账号。检查额度、订阅和宿主运行时，不调用推理、不修改认证或冷却，不代表模型或账号代理出口已验证。
+- 新增代理出口 IP 与可选类型分类，通过同源已鉴权 CPA `api-call` 显式指定代理访问管理员配置的可信 HTTPS 端点；不向目标发送账号凭据或管理 token。分类支持 hosting/isp/residential/mobile/unknown，IP 必须匹配；分类失败不否定已成功的连通结果。
+- 手动检测和开页期间可选定时检测：默认关闭、默认 5 分钟、并发 2，结果 10 分钟过期。隐藏/关闭页面停止调度并作废旧候选，返回页面不自动重启。策略和探测结果仅存在页面内存，没有服务器后台巡检。
+- 全账号随机均分只使用新鲜成功候选，默认处理启用的 CommandCode 账号，保护外部/未知绑定，预览与重试保持固定映射。通过窄字段 PATCH 保存并逐账号有界回读，跨账号不具事务性。
+- 修复异步卡片更新、名称缓存、购买额度显示、后端取数时间和探测生命周期状态；未知标准额度窗口不伪装成数值。既有空 user、工具结果与图片兼容保持不变。
+- 验证：全量 Go 测试与 vet、live 测试编译检查、Windows amd64 C-shared 构建、accounts/oauth/proxy 浏览器回归、隔离 CPA 8.0.69 本地 mock 配额恢复和 HTTP/SOCKS 代理回归。HTTPS 专项覆盖 CONNECT 建立后未受信任自签证书请求失败；未安装系统 CA，未覆盖受信任 HTTPS 回显成功。
+- 升级：替换对应平台插件库、重启 CPA 并刷新管理页面；认证文件无需迁移。宿主重定向、条件性代理初始化回退、固定超时、响应体资源限制和 SOCKS 取消限制仍存在，不保证严格隔离或 fail-closed；额度查询仍走宿主默认出口。
+
+**English**
+
+- Prefer a valid future upstream `resetAt` for new weekly/five-hour plugin cooldowns; fall back to first observation/failure plus seven days/five hours only when missing or invalid. Monthly still uses a valid subscription `currentPeriodEnd`. Repeated observations never slide active timers. Keep upstream reset, plugin policy deadline and CPA-retained state separate.
+- Improve recovery compatibility and rejection diagnostics with the blocking window and latest usage. Weekly 34.84/35 remains exhausted under rounded-zero remaining percentage. Fresh complete healthy evidence, stable identity checks and explicit confirmation remain mandatory. CPA resets account and all model cooldowns without CAS; unknown timeout outcomes are never automatically retried.
+- Add read-only, non-billed checks for all accounts, concurrency three, cancellation and available/unavailable/unknown/disabled counts. Checks read quota, subscription and host runtime without inference, auth writes or cooldown mutation; they do not verify model requests or account-specific egress.
+- Add proxy IP echo and optional hosting/isp/residential/mobile/unknown classification through authenticated same-origin CPA `api-call`, with an explicit proxy and administrator-configured trusted HTTPS endpoints. Targets receive no account credentials or management token. Classification must match the echoed IP; classification failure does not negate successful connectivity.
+- Add manual and opt-in visible-page scheduling, off by default, five-minute interval, concurrency two and ten-minute freshness. Hide/close invalidates candidates and stops scheduling; returning does not restart it. Policies and observations are memory-only, not server-side background monitoring.
+- Balance enabled CommandCode accounts across freshly successful proxies while protecting external/unknown bindings by default. Preview/retry mappings stay fixed. Narrow auth-fields PATCH and bounded per-account readback preserve unrelated fields; cross-account writes are not atomic.
+- Fix asynchronous cards, cached names, purchased-credit display, server retrieval timestamps and probe lifecycle state. Unknown standard quota windows are not fabricated numeric values. Existing empty-user normalization, tool-result correlation and image handling remain intact.
+- Validation: Go tests/vet, live-test compile checks, Windows amd64 C-shared build, accounts/oauth/proxy browser regressions and isolated CPA 8.0.69 local-mock recovery plus HTTP/SOCKS egress tests. HTTPS coverage verifies CONNECT followed by failure with an untrusted self-signed certificate, without installing a system CA; successful trusted HTTPS echo is not covered.
+- Upgrade by replacing the platform library, restarting CPA and refreshing Management Center; auth files need no migration. Host redirects, conditional transport fallback, fixed timeout, response-body resource and SOCKS cancellation limitations remain. This is not strict isolation or fail-closed behavior; quota queries still use host-default egress.
+
 ## v0.2.6 — Recovering stale quota cooldowns (2026-11-15)
 
 **中文**

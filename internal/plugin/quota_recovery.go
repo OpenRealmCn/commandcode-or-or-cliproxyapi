@@ -73,10 +73,22 @@ func (m *Manager) handleCooldownRecovery(ctx context.Context, body []byte) (plug
 	}
 	s, err := q.load(ctx, base, key, false, true, started, time.Time{})
 	if err != nil {
-		return managementError(http.StatusBadGateway, "无法获取新鲜额度，未执行冷却重置")
+		return recoveryError(http.StatusBadGateway, probeError(err, "credits").Code, "无法获取新鲜额度，未执行冷却重置")
 	}
 	if !quotaSnapshotHealthy(s) {
-		return managementError(http.StatusConflict, "额度仍耗尽、订阅无效或数据不完整，未执行冷却重置")
+		code, message := "incomplete_evidence", "订阅或额度数据不完整，无法确认恢复，未执行冷却重置"
+		window := quotaBlockingWindow(s)
+		if window != "" {
+			code, message = "quota_exhausted", window+" 窗口仍耗尽（剩余取整为0%），未执行冷却重置"
+		}
+		if s.usage.SubscriptionState == "expired" || s.usage.SubscriptionState == "inactive" {
+			code, message = "subscription_invalid", "订阅无效或已到期，未执行冷却重置"
+		}
+		usage := s.display()
+		usage.LocalCooldown = q.diagnostic(base, key)
+		out, err := quotaJSON(map[string]any{"error": message, "reason_code": code, "blocking_window": window, "usage": usage})
+		out.StatusCode = http.StatusConflict
+		return out, err
 	}
 	// 查询结束后再次读取实际文件及运行时摘要，不以缓存卡片作为身份凭据。
 	current, found := m.authEntryByIndex(ctx, req.KeyID)
@@ -89,10 +101,10 @@ func (m *Manager) handleCooldownRecovery(ctx context.Context, body []byte) (plug
 	}
 	runtime, err := m.bridge.AuthRuntime(ctx, req.KeyID)
 	if err != nil {
-		return managementError(http.StatusBadGateway, "无法核对宿主运行时状态；当前宿主可能不支持恢复接口")
+		return recoveryError(http.StatusBadGateway, "runtime_unavailable", "无法核对宿主运行时状态；当前宿主可能不支持恢复接口")
 	}
 	if runtime.ID != entry.ID || !isCommandcodeCredential(runtime) || runtime.Disabled || runtime.Status == "disabled" || !pluginQuotaCooldownMessage(runtime.StatusMessage) {
-		return managementError(http.StatusConflict, "当前状态不是插件配额冷却，或账号已禁用；未执行重置")
+		return recoveryError(http.StatusConflict, "runtime_not_quota_cooldown", "当前状态不是插件配额冷却，或账号已禁用；未执行重置")
 	}
 	q.mu.Lock()
 	unchanged := q.entries[quotaStateKey(base, key)] == state && state.generation == generation && state.err == nil && state.cached && quotaSnapshotHealthy(state.snapshot)
@@ -121,7 +133,7 @@ func (m *Manager) handleCooldownRecovery(ctx context.Context, body []byte) (plug
 		}
 		q.recoveryTickets[token] = quotaRecoveryTicket{token: token, authID: entry.ID, authIndex: req.KeyID, name: entry.Name, base: base, keyHash: authKeyHash(key), generation: generation, expires: time.Now().Add(2 * time.Minute)}
 		q.mu.Unlock()
-		return quotaJSON(map[string]any{"token": token, "warning": cooldownRecoveryWarning, "usage": s.display()})
+		return quotaJSON(map[string]any{"token": token, "warning": cooldownRecoveryWarning, "usage": s.display(), "local_cooldown": q.diagnostic(base, key)})
 	}
 	// 宿主无 CAS：上述检查减少错误目标，但不构成并发安全保证。
 	if err := m.bridge.ResetCooldown(ctx, req.KeyID); err != nil {
@@ -142,9 +154,22 @@ func (m *Manager) handleCooldownRecovery(ctx context.Context, body []byte) (plug
 	return quotaJSON(map[string]any{"reset": true, "message": "宿主已确认重置该账号冷却，请刷新管理中心；后续可用性仍由真实请求决定。"})
 }
 
+func recoveryError(status int, code, message string) (pluginapi.ManagementResponse, error) {
+	out, err := quotaJSON(map[string]any{"error": message, "reason_code": code})
+	out.StatusCode = status
+	return out, err
+}
+
 func pluginQuotaCooldownMessage(msg string) bool {
 	for _, window := range []string{"monthly", "weekly", "5-hour"} {
-		if strings.HasPrefix(msg, window+" quota exhausted; account cooldown until ") {
+		prefix := window + " quota exhausted; account cooldown until "
+		if suffix, found := strings.CutPrefix(msg, prefix); found {
+			reset := strings.TrimSpace(suffix)
+			if at, err := time.Parse(time.RFC3339, reset); err == nil && !at.IsZero() {
+				return true
+			}
+		}
+		if msg == window+" usage window exhausted" || strings.HasPrefix(msg, window+" usage window exhausted: ") {
 			return true
 		}
 	}

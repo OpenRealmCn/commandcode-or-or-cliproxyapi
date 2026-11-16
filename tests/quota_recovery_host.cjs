@@ -12,13 +12,15 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'commandcode-recovery-host-')
 const listen = s => new Promise(r => s.listen(0, '127.0.0.1', r));
 const delay = ms => new Promise(r => setTimeout(r, ms));
 let spent = true, child, logs = '', modelCalls = 0, browser;
+const initialReset = new Date(Date.now() + 3600000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+let weeklyReset = initialReset;
 const upstream = http.createServer(async (req, res) => {
   for await (const _ of req) {}
   let body;
   if (req.url.endsWith('/models')) body = {data:[{id:'native-model'}]};
   else if (req.url.includes('/whoami')) body = {success:true,user:{email:'recovery@example.test'}};
   else if (req.url.endsWith('/subscriptions')) body = {success:true,data:{planId:'individual-goat',status:'active',currentPeriodEnd:'2099-01-01T00:00:00Z'}};
-  else if (req.url.endsWith('/credits')) body = {credits:{monthlyCredits:50,purchasedCredits:0},windowLimits:{limited:true,fiveHour:{used:0,cap:14},weekly:{used:spent?35:0,cap:35}}};
+  else if (req.url.endsWith('/credits')) body = {credits:{monthlyCredits:50,purchasedCredits:0},windowLimits:{limited:true,fiveHour:{used:0,cap:14},weekly:{used:spent?35:0,cap:35,resetAt:Date.parse(weeklyReset)}}};
   else if (req.url.endsWith('/chat/completions')) {modelCalls++;body={id:'local',object:'chat.completion',model:'native-model',choices:[{index:0,message:{role:'assistant',content:'recovered'},finish_reason:'stop'}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}};}
   else {res.writeHead(404);res.end();return;}
   res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(body));
@@ -48,6 +50,19 @@ const upstream = http.createServer(async (req, res) => {
     const card=(await list())[0];assert.ok(card.auth_id);
     const blocked=await completion();assert.notEqual(blocked.status,200,JSON.stringify(blocked));assert.equal(modelCalls,0,'spent credential reached model');
     let before=await hostEntry();assert.ok(before.cooldowns?.some(c=>c.reason==='credential_quota'),JSON.stringify(before));
+    const firstQuota=await api(endpoint+'/quota-usage',{key_id:card.key_id});
+    assert.equal(firstQuota.data.usage.weekly.resets_at,initialReset);
+    assert.equal(firstQuota.data.usage.local_cooldown.until,initialReset);
+    assert.equal(firstQuota.data.usage.local_cooldown.source,'upstream_reset');
+    const hostTimer=before.cooldowns.find(c=>c.reason==='credential_quota');
+    assert.ok(hostTimer.remaining_seconds>3500&&hostTimer.remaining_seconds<=3600,JSON.stringify(hostTimer));
+    // 上游更新 resetAt 不滑动活动策略，也不能静默缩短 CPA 已保存的冷却。
+    weeklyReset=new Date(Date.now()+1800000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const shifted=await api(endpoint+'/quota-usage',{key_id:card.key_id});
+    assert.equal(shifted.data.usage.weekly.resets_at,weeklyReset);
+    assert.equal(shifted.data.usage.local_cooldown.until,initialReset);
+    before=await hostEntry();
+    assert.ok(before.cooldowns.find(c=>c.reason==='credential_quota').remaining_seconds>3500);
     spent=false;
     const fresh=await api(endpoint+'/quota-usage',{key_id:card.key_id});assert.equal(fresh.status,200);assert.equal(fresh.data.usage.weekly.used,0);assert.match(fresh.data.usage.recovery_notice,/本地旧冷却已撤销/);
     before=await hostEntry();assert.ok(before.cooldowns?.some(c=>c.reason==='credential_quota'),'ordinary refresh cleared host cooldown');

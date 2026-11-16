@@ -2,6 +2,20 @@
 
 本文件记录面向使用者的更新摘要。详细版本历史见 [RELEASE_NOTES.md](RELEASE_NOTES.md)，操作步骤见 [中文说明](README.zh-CN.md) / [English README](README.md)。
 
+## v0.2.7 — 2026-11-17
+
+- Weekly/5-hour 新建插件冷却优先采用有效未来上游 `resetAt`；缺失或无效时才回退首次观察/失败 +7 天/+5 小时。月度仍使用有效订阅 `currentPeriodEnd`，并分别显示上游重置、插件策略截止和宿主保留状态。
+- 恢复拒绝与检测失败返回结构化原因；继续要求新鲜完整健康证据及明确确认，不强制清除仍耗尽额度的宿主冷却。
+- 新增全账号只读非扣费可用性检查、可信 HTTPS 代理回显/IP 类型检测、开页期间可选定时调度，以及基于新鲜成功检测的全账号随机均分。
+- 修复页面检测取消、过期和隐藏/关闭页面后的候选状态失效；完整验证结果见 README 测试章节。
+
+### v0.2.7 English highlights — 2026-11-17
+
+- Prefer a valid future upstream `resetAt` for new weekly/five-hour plugin cooldowns, falling back to first observation/failure plus seven days/five hours only when missing or invalid. Monthly still uses a valid subscription `currentPeriodEnd`. Keep upstream reset, plugin policy deadline and host-retained state distinct.
+- Return structured recovery rejection and probe failure reasons while requiring fresh complete healthy evidence and explicit confirmation; refuse host cooldown reset while upstream quota remains exhausted.
+- Add read-only non-billed availability checks for all accounts, trusted HTTPS proxy IP echo/optional classification, opt-in visible-page scheduling, and balanced allocation across freshly successful proxy probes.
+- Invalidate candidates after probe expiry or page hide/close; see README testing sections for verification scope.
+
 ## v0.2.6 — 2026-11-15
 
 - 新鲜、完整且有效的额度及订阅快照确认对应窗口恢复后，立即撤销插件本地旧冷却；仍耗尽的其他窗口继续按月 → 周 → 5-hour 优先级阻塞。缺失字段、查询失败、未知套餐及无效订阅不会被误当作恢复。

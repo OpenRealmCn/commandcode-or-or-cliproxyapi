@@ -22,7 +22,7 @@ func TestManagementRegistration(t *testing.T) {
 		Resources []struct{ Path, Menu, Description string } `json:"resources"`
 	}
 	decodeResult(t, mustHandle(t, m, pluginabi.MethodManagementRegister, []byte(`{}`)), &got)
-	if len(got.Routes) != 7 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" || got.Routes[1].Path != "/plugins/"+pluginName+"/accounts" {
+	if len(got.Routes) != 9 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" || got.Routes[1].Path != "/plugins/"+pluginName+"/accounts" {
 		t.Fatalf("routes = %+v", got.Routes)
 	}
 	if len(got.Resources) != 2 || got.Resources[0].Path != "/quota" || got.Resources[0].Menu != "CommandCode" || got.Resources[1].Path != "/oauth" {
@@ -505,22 +505,19 @@ func TestQuotaPageUsesManualSessionCache(t *testing.T) {
 		"typeof parsed === \"object\"",
 		"Array.isArray(parsed)",
 		"catch (_) {}",
-		"Object.entries(cache)",
-		"values.set(keyID, entry.usage)",
-		"cache[keyID] = {usage, fetched_at: timestamp, label: labels.get(keyID) || \"\"}",
+		"entry.identity === cardIdentity(card)",
+		"values.set(card.key_id, entry.usage)",
+		"cache[keyID] = {usage, fetched_at: timestamp, identity: cardIdentity(card)}",
 		"delete cache[keyID]",
 		"new Set(cards.map(card => card.key_id))",
 		"cards.filter(card => !card.email)",
-		"toLocaleString",
+		"usage.refreshed_at",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("quota page missing session cache marker %q", marker)
 		}
 	}
 	for _, marker := range []string{
-		"setTimeout",
-		"visibilitychange",
-		"document.hidden",
 		"window.onfocus",
 		"window.addEventListener(\"focus\"",
 		"TTL",
@@ -547,10 +544,10 @@ func TestQuotaPageUsesNativeQuotaStylesAndThemeBridge(t *testing.T) {
 		// The monthly allowance must stay metered like the two rate-limit
 		// windows instead of degrading back to a bare text row.
 		`label.textContent = "Monthly credits"`,
-		`if (month) { renderUsage(row, month, [left.toFixed(2) + " credits left"], true); }`,
+		`if (month) { renderUsage(row, month, [balance], true);`,
 		`[["five_hour", "5-hour window"], ["weekly", "Weekly window"]]`,
-		`if (usage) renderUsage(row, usage, null, name === "weekly");`,
-		`text(meta, left.toFixed(2) + " credits left (plan unknown)")`,
+		`if (usage) { renderUsage(row, usage, null, name === "weekly");`,
+		`text(meta, balance + " (plan unknown)")`,
 		`function renderUsage(row, usage, extraParts, withDaysLeft) {`,
 		`(extraParts || []).forEach(part => parts.push(part));`,
 		`const days = Math.max(0, Math.ceil((reset.getTime() - Date.now()) / 864e5));`,

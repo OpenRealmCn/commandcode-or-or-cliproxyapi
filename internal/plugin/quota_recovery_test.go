@@ -51,6 +51,117 @@ func TestQuotaCooldownPreflightRechecksLiveTimer(t *testing.T) {
 	}
 }
 
+func TestPluginQuotaCooldownMessageOnlyMatchesKnownWindowFormats(t *testing.T) {
+	for _, message := range []string{
+		"monthly quota exhausted; account cooldown until 2026-11-15T09:00:00Z",
+		"weekly usage window exhausted",
+		"5-hour usage window exhausted: limit reached",
+	} {
+		if !pluginQuotaCooldownMessage(message) {
+			t.Errorf("known quota cooldown not recognized: %q", message)
+		}
+	}
+	for _, message := range []string{"429 quota exhausted", "weekly quota exhausted; account cooldown until nonsense", "daily usage window exhausted", "weekly model quota exhausted"} {
+		if pluginQuotaCooldownMessage(message) {
+			t.Errorf("non-target cooldown recognized: %q", message)
+		}
+	}
+}
+
+func TestQuotaRecoveryErrorHasStructuredBlockingWindow(t *testing.T) {
+	entry := pluginapi.HostAuthFileEntry{ID: "stable", AuthIndex: "idx", Name: "a.json", Provider: ProviderID, Source: "file", Status: "error", Unavailable: true, StatusMessage: "weekly quota exhausted; account cooldown until 2099-01-01T00:00:00Z"}
+	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
+		switch method {
+		case pluginabi.MethodHostAuthList:
+			return hostOK(map[string]any{"files": []pluginapi.HostAuthFileEntry{entry}}), nil
+		case pluginabi.MethodHostAuthGet:
+			return hostOK(pluginapi.HostAuthGetResponse{AuthIndex: "idx", JSON: json.RawMessage(`{"type":"commandcode","api_key":"test-key-123"}`)}), nil
+		case pluginabi.MethodHostHTTPDo:
+			return hostOK(pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"credits":{"monthlyCredits":70,"purchasedCredits":0},"windowLimits":{"limited":true,"weekly":{"used":35,"cap":35},"fiveHour":{"used":1,"cap":14}}}`)}), nil
+		default:
+			return hostOK(map[string]any{}), nil
+		}
+	}}
+	m := NewManager(NewHostBridge(f.call))
+	m.cfg.BaseURL = "https://example.test/provider/v1"
+	response, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: "/v0/management/plugins/" + pluginName + "/cooldown-recovery", Body: []byte(`{"key_id":"idx","auth_id":"stable"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.StatusCode, response.Body)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["reason_code"] != "quota_exhausted" || body["blocking_window"] != "weekly" {
+		t.Fatalf("response=%v", body)
+	}
+	usage, ok := body["usage"].(map[string]any)
+	if !ok || usage["weekly"] == nil {
+		t.Fatalf("missing latest usage: %v", body)
+	}
+}
+
+func TestQuotaRecoveryErrorsHaveStructuredReasons(t *testing.T) {
+	for _, mode := range []string{"network_failure", "credentials_rejected", "runtime_unavailable", "runtime_not_quota_cooldown"} {
+		t.Run(mode, func(t *testing.T) {
+			entry := pluginapi.HostAuthFileEntry{ID: "stable", AuthIndex: "idx", Name: "a.json", Provider: ProviderID, Source: "file", Status: "error", Unavailable: true, StatusMessage: "weekly quota exhausted; account cooldown until 2099-01-01T00:00:00Z"}
+			f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
+				switch method {
+				case pluginabi.MethodHostAuthList:
+					return hostOK(map[string]any{"files": []pluginapi.HostAuthFileEntry{entry}}), nil
+				case pluginabi.MethodHostAuthGet:
+					return hostOK(pluginapi.HostAuthGetResponse{AuthIndex: "idx", JSON: json.RawMessage(`{"type":"commandcode","api_key":"test-key-123"}`)}), nil
+				case pluginabi.MethodHostAuthGetRuntime:
+					if mode == "runtime_unavailable" {
+						return []byte(`{"ok":false,"error":{"code":"unsupported"}}`), nil
+					}
+					if mode == "runtime_not_quota_cooldown" {
+						entry.StatusMessage = "unauthorized"
+					}
+					return hostOK(pluginapi.HostAuthGetRuntimeResponse{Auth: entry}), nil
+				case pluginabi.MethodHostHTTPDo:
+					if mode == "network_failure" {
+						return nil, context.DeadlineExceeded
+					}
+					status := http.StatusOK
+					body := `{"credits":{"monthlyCredits":70,"purchasedCredits":0},"windowLimits":{"limited":true,"weekly":{"used":1,"cap":35},"fiveHour":{"used":1,"cap":14}}}`
+					var req hostHTTPReq
+					_ = json.Unmarshal(payload, &req)
+					if strings.HasSuffix(req.URL, "/subscriptions") {
+						body = `{"success":true,"data":{"planId":"individual-goat","status":"active","currentPeriodEnd":"2099-01-01T00:00:00Z"}}`
+					}
+					if mode == "credentials_rejected" {
+						status = http.StatusUnauthorized
+						body = `{}`
+					}
+					return hostOK(pluginapi.HTTPResponse{StatusCode: status, Body: []byte(body)}), nil
+				}
+				return hostOK(map[string]any{}), nil
+			}}
+			m := NewManager(NewHostBridge(f.call))
+			m.cfg.BaseURL = "https://example.test/provider/v1"
+			response, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: "POST", Path: "/v0/management/plugins/" + pluginName + "/cooldown-recovery", Body: []byte(`{"key_id":"idx","auth_id":"stable"}`)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]string{"network_failure": "network_failure", "credentials_rejected": "credentials_rejected", "runtime_unavailable": "runtime_unavailable", "runtime_not_quota_cooldown": "runtime_not_quota_cooldown"}[mode]
+			if response.StatusCode < 400 {
+				t.Fatalf("expected failure: %s", response.Body)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(response.Body, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got["reason_code"] != want {
+				t.Fatalf("reason_code=%v want=%s body=%s", got["reason_code"], want, response.Body)
+			}
+		})
+	}
+}
+
 func TestQuotaRecoveryRequiresConfirmationFreshHealthAndIdentity(t *testing.T) {
 	for _, mode := range []string{"success", "exhausted", "missing_month", "changed_key", "changed_id", "disabled", "other_error", "reset_failure", "new_failure", "partial", "expired"} {
 		t.Run(mode, func(t *testing.T) {

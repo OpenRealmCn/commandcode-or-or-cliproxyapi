@@ -4,8 +4,9 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const http=require('node:http');
+const https=require('node:https');
 const net=require('node:net');
-const {spawn}=require('node:child_process');
+const {spawn,execFileSync}=require('node:child_process');
 const {createHash}=require('node:crypto');
 const binary=process.env.CPA_HOST_BINARY, library=process.env.CPA_PLUGIN_LIBRARY;
 if(!binary||!library)throw Error('Set CPA_HOST_BINARY and CPA_PLUGIN_LIBRARY');
@@ -15,6 +16,8 @@ const parentPath='/v8/management/config/plugins/configs/'+id;
 const hash=v=>createHash('sha256').update(v).digest('hex');
 let child, logs='', lastExit='direct', browser;
 const hits=[];
+let tlsTarget, connectProxy, connectCount=0, tlsRequests=0;
+const tunnelSockets=new Set();
 const listen=s=>new Promise(r=>s.listen(0,'127.0.0.1',r));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,label){for(let i=0;i<100;i++){if(await fn().catch(()=>false))return;await delay(100);}throw Error(label);}
@@ -23,6 +26,14 @@ const upstream=http.createServer(async(req,res)=>{
   const key=(req.headers.authorization||'').replace(/^Bearer /,'');
   lastExit=req.headers['x-test-proxy']||'direct';hits.push({url:req.url,key,exit:lastExit});
   const reply=data=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(data));};
+  if(req.url==='/probe/ip'||req.url.startsWith('/probe/type?')){
+    assert.equal(req.method,'GET');assert.equal(req.headers.accept,'application/json');
+    assert.equal(req.headers.authorization,undefined,'management/account authorization reached echo target');
+    assert.equal(key,'');
+    if(req.url==='/probe/ip')return reply({ip:'203.0.113.7'});
+    assert.equal(new URL(req.url,'http://127.0.0.1').searchParams.get('ip'),'203.0.113.7');
+    return reply({ip:'203.0.113.7',type:'hosting',asn:'AS64500',organization:'Local mock',source:'local integration fixture'});
+  }
   if(req.url.endsWith('/models'))return reply({data:[{id:'native-model'}]});
   if(req.url.endsWith('/whoami'))return reply({success:true,user:{email:'proxy@example.test'}});
   if(req.url.endsWith('/subscriptions'))return reply({success:true,data:{planId:'individual-goat',status:'active',currentPeriodEnd:'2099-01-01T00:00:00Z'}});
@@ -104,6 +115,47 @@ const socks=net.createServer(socket=>{
  const entries=[{id:'px_'+'1'.repeat(32),label:'代理一',url:url1},{id:'px_'+'2'.repeat(32),label:'代理二',url:url2}];
  try{
    start();await ready();
+   const probeURL='http://127.0.0.1:'+upstream.address().port;
+   async function probeEgress(proxyURL,exit){
+     const before=hits.length;
+     for(const endpoint of ['/probe/ip','/probe/type?ip=203.0.113.7']){
+       const result=await api(mgmt+'/api-call','POST',{method:'GET',url:probeURL+endpoint,proxy_url:proxyURL,header:{Accept:'application/json'}});
+       assert.equal(result.status,200,JSON.stringify(result));assert.equal(result.data.status_code,200);
+       const body=JSON.parse(result.data.body);assert.equal(body.ip,'203.0.113.7');
+       if(endpoint.includes('/type'))assert.equal(body.type,'hosting');
+     }
+     const actual=hits.slice(before).filter(h=>h.url.startsWith('/probe/'));
+     assert.equal(actual.length,2);assert.ok(actual.every(h=>h.exit===exit&&h.key===''));
+   }
+   await probeEgress(url2,'two');
+   // 自签证书不加入系统信任；验证 CONNECT 确实建立且宿主仍拒绝未受信任证书。
+   if(process.env.CPA_TLS_PROBE==='1'){
+     const keyFile=path.join(root,'tls-key.pem'), certFile=path.join(root,'tls-cert.pem');
+     execFileSync(process.env.CPA_TEST_OPENSSL||'openssl',['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1','-keyout',keyFile,'-out',certFile],{stdio:'ignore',env:{...process.env,MSYS_NO_PATHCONV:'1'}});
+     tlsTarget=https.createServer({key:fs.readFileSync(keyFile),cert:fs.readFileSync(certFile)},(req,res)=>{tlsRequests++;res.end(JSON.stringify({ip:'203.0.113.7'}));});
+     await listen(tlsTarget);
+     connectProxy=http.createServer((req,res)=>{res.writeHead(403);res.end();});
+     connectProxy.on('connect',(req,socket,head)=>{
+       if(req.url!=='127.0.0.1:'+tlsTarget.address().port){socket.destroy();return;}
+       connectCount++;
+       const remote=net.connect(tlsTarget.address().port,'127.0.0.1',()=>{
+         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+         if(head.length)remote.write(head);socket.pipe(remote);remote.pipe(socket);
+       });
+       for(const peer of [socket,remote]){tunnelSockets.add(peer);peer.on('error',()=>{socket.destroy();remote.destroy();});peer.on('close',()=>tunnelSockets.delete(peer));}
+       socket.on('close',()=>remote.destroy());remote.on('close',()=>socket.destroy());
+     });
+     await listen(connectProxy);
+     const denied=await api(mgmt+'/api-call','POST',{method:'GET',url:'https://127.0.0.1:'+tlsTarget.address().port+'/probe/ip',proxy_url:'http://127.0.0.1:'+connectProxy.address().port,header:{Accept:'application/json'}});
+     assert.equal(denied.status,502,JSON.stringify(denied));
+     assert.ok(connectCount>0,'HTTPS 请求没有建立本地 CONNECT');
+     assert.equal(tlsRequests,0,'未受信任证书不应抵达 HTTP handler');
+     console.log('PASS: HTTPS CONNECT established; untrusted local certificate rejected without system trust changes.');
+   }
+   const closedProxy=http.createServer();await listen(closedProxy);const closedPort=closedProxy.address().port;await new Promise(r=>closedProxy.close(r));
+   const beforeFailure=hits.filter(h=>h.url.startsWith('/probe/')).length;
+   assert.equal((await api(mgmt+'/api-call','POST',{method:'GET',url:probeURL+'/probe/ip',proxy_url:'http://127.0.0.1:'+closedPort,header:{Accept:'application/json'}})).status,502);
+   assert.equal(hits.filter(h=>h.url.startsWith('/probe/')).length,beforeFailure,'failed proxy was bypassed for this tested path');
    const validation=await api(mgmt+'/plugins/'+id+'/proxy-pool/validate','POST',{lines:url1+'\n'+url2,existing:[]});assert.equal(validation.status,200);assert.equal(validation.data.valid,2);
    const parent=await api(parentPath);assert.equal(parent.status,200);assert.ok(parent.etag);
    const saved=await api(poolPath,'PUT',{'schema-version':1,proxies:entries},{'If-Match':parent.etag});assert.equal(saved.status,200,JSON.stringify(saved));
@@ -124,6 +176,7 @@ const socks=net.createServer(socket=>{
    assert.equal((await api(mgmt+'/proxy-url','PUT',{value:url1})).status,200);
    await stop();start();await ready();
    assert.equal((await api(mgmt+'/proxy-url')).data['proxy-url'],url1);
+   await probeEgress(url2,'two');
    await completion('one');await completion('one',true);
    assert.equal((await api(mgmt+'/proxy-url','PUT',{value:''})).status,200);
    await stop();start();await ready();await completion('two');
@@ -138,6 +191,7 @@ const socks=net.createServer(socket=>{
    assert.equal((await api(poolPath,'PUT',{'schema-version':1,proxies:socksPool},{'If-Match':dir.etag})).status,200);
    assert.equal((await api(mgmt+'/auth-files/fields','PATCH',{name:'b.json',commandcode_proxy_id:socksId,proxy_url:socksURL})).status,200);
    await stop();start();await ready();await completion('one');await completion('one',true);assert.ok(socksConnections>0,'SOCKS5 mock was not used');
+   await probeEgress(socksURL,'one');
    if(process.env.CPA_BROWSER==='1'){
      const {chromium}=require('playwright');browser=await chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH||undefined});
      const page=await browser.newPage({viewport:{width:1100,height:850}}), errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -151,6 +205,8 @@ const socks=net.createServer(socket=>{
    console.log('PASS: real CPA 8 native plugin proxy directory CAS + auth field persistence + HTTP account unary/stream exits + default quota exit + global override + restart + empty-string unbind + browser='+(process.env.CPA_BROWSER==='1')+'. Artifacts: '+root);
  }finally{
    if(browser)await browser.close();await stop();fs.writeFileSync(path.join(root,'host.log'),logs);
+   for(const s of tunnelSockets)s.destroy();
+   for(const server of [connectProxy,tlsTarget])if(server){server.closeAllConnections();await new Promise(r=>server.close(r));}
    for(const s of socksSockets)s.destroy();await new Promise(r=>socks.close(r));
    for(const s of [upstream,p1,p2]){s.closeAllConnections();await new Promise(r=>s.close(r));}
  }
