@@ -2,10 +2,15 @@
 
 本文件记录面向使用者的更新摘要。详细版本历史见 [RELEASE_NOTES.md](RELEASE_NOTES.md)，操作步骤见 [中文说明](README.zh-CN.md) / [English README](README.md)。
 
-## Unreleased
+## v0.2.8 — 2026-11-17
 
-- 后续发行版停止提供 macOS 预编译包，并移除 GitHub Actions 中的 darwin amd64/arm64 构建任务；Mac 用户需自行从源码构建，已有发行版资产保持不变。
-- Future releases stop shipping macOS prebuilt packages and remove darwin amd64/arm64 GitHub Actions builds. Mac users must build from source; existing release assets remain unchanged.
+- 正式将移除 macOS 构建的工作流纳入发行标签；CI 保留 Linux amd64/arm64、Windows amd64/arm64 和尽力构建的 FreeBSD amd64。Mac 用户需自行从源码构建，不再提供 macOS 预编译包，已有发行版资产保持不变。
+- 此补丁版仅调整发行平台与版本元数据，保留 v0.2.7 的配额、恢复、账号可用性和代理池功能。
+
+### v0.2.8 English highlights — 2026-11-17
+
+- Release the workflow without macOS jobs under a new version tag. CI retains Linux amd64/arm64, Windows amd64/arm64 and best-effort FreeBSD amd64. Mac users must build from source; no macOS prebuilt packages are provided, and existing assets remain unchanged.
+- This patch changes release platforms and version metadata only, retaining v0.2.7 quota, recovery, account availability and proxy-pool behavior.
 
 ## v0.2.7 — 2026-11-17
 

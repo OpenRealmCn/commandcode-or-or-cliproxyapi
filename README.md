@@ -12,7 +12,7 @@ The plugin owns model discovery, protocol translation, execution, and the Comman
 
 See the [ChangeLog](CHANGELOG.md) for this update and [release notes](RELEASE_NOTES.md) for detailed history.
 
-**v0.2.7** adds upstream-reset-aware cooldowns, clearer recovery diagnostics, read-only account availability checks, proxy IP/type probes with opt-in visible-page scheduling, and balanced allocation to freshly successful proxies. Replace the platform-specific plugin library, restart CPA and refresh the management page to upgrade. Proxy probes require administrator-configured trusted HTTPS endpoints; availability checks do not verify model inference or account-scoped egress.
+**v0.2.8** keeps v0.2.7 functionality and publishes updated builds without macOS CI artifacts. Mac users must build from source; see the Build section. The release includes Linux amd64/arm64, Windows amd64/arm64 and best-effort FreeBSD amd64.
 
 ## What the upstream actually serves
 

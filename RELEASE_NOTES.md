@@ -2,6 +2,22 @@
 
 User-facing change summary: [ChangeLog](CHANGELOG.md). Supported plans: **CommandCode GOAT / Pro / Max**, not CommandCode Go.
 
+## v0.2.8 — Release platforms without macOS CI (2026-11-17)
+
+**中文**
+
+- 基于当前主分支重新发行，将移除 darwin amd64/arm64 构建任务的 GitHub Actions 工作流正式纳入版本标签。
+- 预编译发行平台为 Linux amd64/arm64、Windows amd64/arm64，以及尽力构建的 FreeBSD amd64；提供汇总 SHA-256 校验文件，每个 ZIP 根目录仅含对应插件库。macOS 不再提供预编译包，Mac 用户请按 README 使用 Go 1.26+、CGO 与 Xcode Command Line Tools 自行构建。
+- 此版本仅调整发行平台和版本元数据，不改变 v0.2.7 的运行行为：配额上游重置时间策略、恢复保护、只读全账号检测、代理探测与随机均分功能均保留。已有发行资产不删除，认证文件无需迁移。
+- 升级时替换对应平台插件库、重启 CPA 并刷新管理页面。代理和非扣费可用性检查的能力边界仍以 README 为准。
+
+**English**
+
+- Release from the current main branch so the version tag includes the GitHub Actions workflow without darwin amd64/arm64 jobs.
+- Prebuilt packages cover Linux amd64/arm64, Windows amd64/arm64 and best-effort FreeBSD amd64, with combined SHA-256 checksums and one matching library at each ZIP root. macOS prebuilt packages are no longer provided; Mac users must build from source using Go 1.26+, CGO and Xcode Command Line Tools as documented in the README.
+- This patch changes release platforms and version metadata only. v0.2.7 runtime behavior, upstream-reset-aware quota timers, recovery safeguards, read-only account checks, proxy probes and balanced allocation are retained. Existing assets remain untouched and auth files need no migration.
+- Upgrade by replacing the platform library, restarting CPA and refreshing Management Center. Proxy and non-billed availability verification limitations remain as documented in the README.
+
 ## v0.2.7 — Quota timing, account checks and proxy probes (2026-11-17)
 
 **中文**
