@@ -88,12 +88,14 @@ CommandCode GOAT / Pro / Max 通过它的 OpenAI 兼容入口访问：
 
 ## 构建
 
+后续发行版不再提供 macOS 预编译包，GitHub Actions 也不再运行 macOS 构建。Mac 用户需在自己的机器上使用 Go 1.26+、CGO 和 Xcode Command Line Tools（`xcode-select --install`）从源码构建。CI 保留 Linux amd64/arm64 和 Windows amd64/arm64，FreeBSD amd64 仍为尽力构建。已有发行版资产不删除。
+
 ```bash
 # Linux (AMD64)
 go build -buildmode=c-shared -o plugins/linux/amd64/commandcode-or-or-cliproxyapi.so .
 
-# macOS (ARM64)
-go build -buildmode=c-shared -o plugins/darwin/arm64/commandcode-or-or-cliproxyapi.dylib .
+# macOS（Apple Silicon，仅自行构建；Intel Mac 将目录中的 arm64 改为 amd64）
+CGO_ENABLED=1 go build -buildmode=c-shared -o plugins/darwin/arm64/commandcode-or-or-cliproxyapi.dylib .
 
 # Windows (AMD64)
 go build -buildmode=c-shared -o plugins/windows/amd64/commandcode-or-or-cliproxyapi.dll .

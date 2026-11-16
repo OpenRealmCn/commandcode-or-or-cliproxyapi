@@ -215,7 +215,7 @@ Verified end-to-end against a real v8.0.67 host: a window-exhausted 429 produced
 
 - `pluginVersion` in `internal/plugin/plugin.go` is reported to the host and asserted exactly in `internal/plugin/plugin_test.go`; bump both together.
 - A release also updates `README.md` / `README.zh-CN.md`, `CHANGELOG.md` (user-facing, bilingual), and `RELEASE_NOTES.md` (used as the GitHub release body).
-- Pushing a `v*` tag runs `.github/workflows/build.yml` (also triggered on `pull_request` and manually via `workflow_dispatch`). The test job runs `go test ./...` then `go vet ./...`; the build matrix covers linux amd64/arm64, darwin amd64/arm64, windows amd64, windows arm64 (cross-cgo), and freebsd amd64 (`continue-on-error`, so its failure does not block a release). Each zip must contain exactly one library at its root, plus a release-wide `checksums.txt`.
+- Pushing a `v*` tag runs `.github/workflows/build.yml` (also triggered on `pull_request` and manually via `workflow_dispatch`). The test job runs `go test ./...` then `go vet ./...`; the build matrix covers linux amd64/arm64, windows amd64, windows arm64 (cross-cgo), and freebsd amd64 (`continue-on-error`, so its failure does not block a release). Future releases do not ship macOS prebuilt assets or run darwin/macOS Actions jobs; Mac users build from source with CGO and Xcode Command Line Tools. Keep self-build instructions and historical release records intact. Each zip must contain exactly one library at its root, plus a release-wide `checksums.txt`.
 
 **The `release` job is gated on `refs/tags/v*`**, so a `workflow_dispatch` run builds artifacts but publishes nothing. Two consequences observed in practice:
 

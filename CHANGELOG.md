@@ -2,6 +2,11 @@
 
 本文件记录面向使用者的更新摘要。详细版本历史见 [RELEASE_NOTES.md](RELEASE_NOTES.md)，操作步骤见 [中文说明](README.zh-CN.md) / [English README](README.md)。
 
+## Unreleased
+
+- 后续发行版停止提供 macOS 预编译包，并移除 GitHub Actions 中的 darwin amd64/arm64 构建任务；Mac 用户需自行从源码构建，已有发行版资产保持不变。
+- Future releases stop shipping macOS prebuilt packages and remove darwin amd64/arm64 GitHub Actions builds. Mac users must build from source; existing release assets remain unchanged.
+
 ## v0.2.7 — 2026-11-17
 
 - Weekly/5-hour 新建插件冷却优先采用有效未来上游 `resetAt`；缺失或无效时才回退首次观察/失败 +7 天/+5 小时。月度仍使用有效订阅 `currentPeriodEnd`，并分别显示上游重置、插件策略截止和宿主保留状态。

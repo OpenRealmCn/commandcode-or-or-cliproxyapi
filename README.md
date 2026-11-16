@@ -88,12 +88,14 @@ Without this plugin, a manual CommandCode GOAT / Pro / Max integration must mana
 
 ## Build
 
+Future releases no longer provide macOS prebuilt packages, and GitHub Actions no longer runs macOS builds. Mac users must build from source on their own machine using Go 1.26+, CGO and the Xcode Command Line Tools (`xcode-select --install`). CI builds Linux amd64/arm64 and Windows amd64/arm64; FreeBSD amd64 remains best-effort. Existing release assets are not removed.
+
 ```bash
 # Linux (AMD64)
 go build -buildmode=c-shared -o plugins/linux/amd64/commandcode-or-or-cliproxyapi.so .
 
-# macOS (ARM64)
-go build -buildmode=c-shared -o plugins/darwin/arm64/commandcode-or-or-cliproxyapi.dylib .
+# macOS (Apple Silicon, self-build only; use amd64 on an Intel Mac)
+CGO_ENABLED=1 go build -buildmode=c-shared -o plugins/darwin/arm64/commandcode-or-or-cliproxyapi.dylib .
 
 # Windows (AMD64)
 go build -buildmode=c-shared -o plugins/windows/amd64/commandcode-or-or-cliproxyapi.dll .
